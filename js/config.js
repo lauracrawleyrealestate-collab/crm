@@ -11,7 +11,7 @@
 
 const CONFIG = {
 
-  GOOGLE_CLIENT_ID: 'PASTE_YOUR_CLIENT_ID_HERE.apps.googleusercontent.com',
+  GOOGLE_CLIENT_ID: '955199540554-b21sr8jufdmcv0g4mqlh85vtbp6o3j8i.apps.googleusercontent.com',
 
   // Names of the files this app creates in your Google Drive.
   SPREADSHEET_NAME: 'Laura CRM Data',
