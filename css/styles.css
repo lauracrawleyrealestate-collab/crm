@@ -242,6 +242,19 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .contact-right { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .gdot { color: var(--gold); font-size: 9px; vertical-align: middle; }
 
+.selbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px; margin-bottom: 8px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); position: sticky; top: calc(var(--topbar-h) + 4px); z-index: 5;
+}
+.selcount { font-size: 13.5px; }
+.selcount b { font-size: 15px; }
+.pick { display: grid; place-items: center; width: 22px; flex-shrink: 0; cursor: pointer; }
+.pick input { width: 17px; height: 17px; cursor: pointer; accent-color: var(--gold); }
+.pick-spacer { width: 22px; flex-shrink: 0; }
+.contact-row.picked { border-color: var(--gold); background: var(--amber-bg); }
+
 /* ------------------------------ dashboard -------------------------------- */
 
 .dashboard { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
