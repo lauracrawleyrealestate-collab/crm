@@ -11,6 +11,7 @@ const App = {
   contactFilter: '',
   contactMode: 'crm',        // 'crm' = people in the CRM, 'google' = whole address book
   googleContactsLoaded: false,
+  picked: new Set(),         // Google contacts ticked for a bulk add
 
   /* ------------------------------- boot -------------------------------- */
 
@@ -80,6 +81,7 @@ const App = {
       const b = e.target.closest('[data-cmode]');
       if (!b) return;
       this.contactMode = b.dataset.cmode;
+      if (this.contactMode !== 'google') this.picked.clear();
       $$('#contact-seg button').forEach(x =>
         x.classList.toggle('active', x.dataset.cmode === this.contactMode));
       if (this.contactMode === 'google' && !this.googleContactsLoaded) this.syncContacts();
@@ -553,21 +555,44 @@ const App = {
     const linked = {};
     Store.contacts.forEach(c => { if (c['Google ID']) linked[c['Google ID']] = c; });
 
-    let list = (People._cache || []).slice();
-    if (q) list = list.filter(p =>
-      [p.name, p.email, p.phone, p.address, p.org].join(' ').toLowerCase().includes(q));
-
     if (!People._cache) {
       $('#contact-list').innerHTML =
         '<div class="panel"><div class="muted">Reading your Google Contacts…</div></div>';
       return;
     }
 
-    $('#contact-list').innerHTML = list.length ? list.map(p => {
+    let list = People._cache.slice();
+    if (q) list = list.filter(p =>
+      [p.name, p.email, p.phone, p.address, p.org].join(' ').toLowerCase().includes(q));
+
+    const addable = list.filter(p => !linked[p.id]);
+    const picked = this.picked.size;
+
+    const bar =
+      '<div class="selbar">' +
+        (picked
+          ? '<span class="selcount"><b>' + picked + '</b> selected</span>'
+          : '<span class="muted">Tick the people who belong in your pipeline</span>') +
+        '<span class="grow"></span>' +
+        (addable.length
+          ? '<button class="btn btn-sm" data-sel-all>Select all ' + addable.length +
+            (q ? ' matching' : '') + '</button>'
+          : '') +
+        (picked ? '<button class="btn btn-sm" data-sel-none>Clear</button>' : '') +
+        (picked ? '<button class="btn btn-primary btn-sm" data-bulk-add>Add ' + picked +
+            ' to CRM</button>' : '') +
+      '</div>';
+
+    const rows = list.length ? list.map(p => {
       const inCrm = linked[p.id];
       const sub = [p.phone, p.email, p.org].filter(Boolean).join(' · ');
-      return '<div class="contact-row"' +
+      const on = this.picked.has(p.id);
+      return '<div class="contact-row' + (on ? ' picked' : '') + '"' +
         (inCrm ? ' data-open-contact="' + esc(inCrm.ID) + '"' : '') + '>' +
+        (inCrm
+          ? '<span class="pick-spacer"></span>'
+          : '<label class="pick"><input type="checkbox" data-pick="' + esc(p.id) + '"' +
+            (on ? ' checked' : '') + '></label>') +
         '<div class="avatar">' + esc(initials(p.name)) + '</div>' +
         '<div class="contact-main">' +
           '<div class="contact-name">' + esc(p.name || '(no name)') + '</div>' +
@@ -576,12 +601,75 @@ const App = {
         '<div class="contact-right">' +
           (inCrm
             ? '<span class="pill ok">In CRM</span>'
-            : '<button class="btn btn-sm" data-link-google="' + esc(p.id) + '">+ Add to CRM</button>') +
+            : '<button class="btn btn-sm" data-link-google="' + esc(p.id) + '">+ Add</button>') +
         '</div>' +
       '</div>';
     }).join('') : '<div class="panel"><div class="muted">' +
       (People._cache.length ? 'No Google contacts match that search.'
                             : 'No contacts found in your Google account.') + '</div></div>';
+
+    $('#contact-list').innerHTML = bar + rows;
+  },
+
+  togglePick(id) {
+    if (this.picked.has(id)) this.picked.delete(id);
+    else this.picked.add(id);
+    this.renderGoogleContacts();
+  },
+
+  selectAllShown() {
+    const q = this.contactQuery;
+    const linked = new Set(Store.contacts.map(c => c['Google ID']).filter(Boolean));
+    (People._cache || [])
+      .filter(p => !linked.has(p.id))
+      .filter(p => !q || [p.name, p.email, p.phone, p.address, p.org]
+        .join(' ').toLowerCase().includes(q))
+      .forEach(p => this.picked.add(p.id));
+    this.renderGoogleContacts();
+  },
+
+  clearPicks() { this.picked.clear(); this.renderGoogleContacts(); },
+
+  /* Add every ticked Google contact at once, with one shared type/source. */
+  async bulkAddGoogle() {
+    const people = (People._cache || []).filter(p => this.picked.has(p.id));
+    if (!people.length) return;
+
+    const s = Store.settings;
+    const data = await Modal.open({
+      title: 'Add ' + people.length + ' contacts to your CRM',
+      submitLabel: 'Add them',
+      fields: [
+        { name: 'Type', label: 'Type — applied to all of them', type: 'select',
+          options: s.contactTypes, value: 'Past Client', allowBlank: true },
+        { name: 'Source', label: 'Where they came from', type: 'select',
+          options: s.sources, allowBlank: true },
+        { name: 'Tags', label: 'Tags', placeholder: 'e.g. address book import' },
+      ],
+      onRender: (form) => {
+        const p = document.createElement('p');
+        p.className = 'muted';
+        p.style.margin = '0';
+        p.textContent = 'Their names, phones, emails and addresses keep coming from ' +
+          'Google — this only adds the CRM layer on top. Nothing is written to your ' +
+          'Google Contacts.';
+        $('.modal-body', form).prepend(p);
+      },
+    });
+    if (!data) return;
+
+    try {
+      showLoader('Adding ' + people.length + ' contacts…');
+      const r = await Store.linkGoogleContacts(people, {
+        Type: data.Type || '', Source: data.Source || '', Tags: data.Tags || '',
+      });
+      this.picked.clear();
+      hideLoader();
+      this.renderContactFilter();
+      this.render();
+      toast(r.added + ' added to your CRM' +
+        (r.skipped ? ' · ' + r.skipped + ' were already in' : ''));
+    } catch (e) { hideLoader(); toast(e.message, true); }
   },
 
   async linkGoogle(personId) {
@@ -1286,6 +1374,14 @@ const App = {
 
     const editContact = hit('data-edit-contact');
     if (editContact) return this.contactForm(editContact);
+
+    const pick = t.closest('[data-pick]');
+    if (pick) { e.stopPropagation(); return this.togglePick(pick.getAttribute('data-pick')); }
+    if (t.closest('.pick')) { e.stopPropagation(); return; }
+
+    if (t.closest('[data-sel-all]')) return this.selectAllShown();
+    if (t.closest('[data-sel-none]')) return this.clearPicks();
+    if (t.closest('[data-bulk-add]')) return this.bulkAddGoogle();
 
     const linkG = hit('data-link-google');
     if (linkG) { e.stopPropagation(); return this.linkGoogle(linkG); }

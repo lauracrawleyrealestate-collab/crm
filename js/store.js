@@ -93,6 +93,38 @@ const Store = {
     return data;
   },
 
+  /* Pull a batch of Google contacts into the CRM in one go.
+     One sheet write for the whole batch, not one per person — 30 separate
+     writes would be slow and burn quota for no reason. */
+  async linkGoogleContacts(people, extra = {}) {
+    const already = new Set(this.contacts.map(c => c['Google ID']).filter(Boolean));
+    const added = [];
+
+    people.forEach(p => {
+      if (already.has(p.id)) return;
+      already.add(p.id);
+      added.push(Object.assign({
+        ID: this.newId('C'),
+        Name: p.name,
+        Type: '',
+        Phone: p.phone,
+        Email: p.email,
+        Address: p.address,
+        Source: '',
+        Tags: '',
+        Notes: '',
+        Created: this.today(),
+        'Last Contacted': '',
+        'Google ID': p.id,
+      }, extra));
+    });
+
+    if (!added.length) return { added: 0, skipped: people.length };
+    this.contacts = this.contacts.concat(added);
+    await Sheets.write('Contacts', this.contacts);
+    return { added: added.length, skipped: people.length - added.length };
+  },
+
   /* Pull an existing Google contact into the CRM (no new Google record). */
   async linkGoogleContact(person, extra = {}) {
     const existing = this.contacts.find(c => c['Google ID'] === person.id);
