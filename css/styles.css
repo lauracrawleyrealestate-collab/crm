@@ -192,6 +192,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   background: var(--line-2); padding: 1px 7px; border-radius: 20px;
 }
 .col-sum { margin-left: auto; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.col-sum b { color: var(--green); font-weight: 600; }
 .col-body { padding: 8px; overflow-y: auto; flex: 1; min-height: 60px; }
 .col-add {
   border: 0; background: transparent; color: var(--text-3); cursor: pointer;
@@ -211,6 +212,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .card-person { color: var(--text-2); font-size: 12.5px; }
 .card-meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .card-value { font-weight: 600; font-size: 12.5px; color: var(--green); font-variant-numeric: tabular-nums; }
+.card-price { font-weight: 600; font-size: 12.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .pill {
   font-size: 11px; padding: 2px 7px; border-radius: 20px; font-weight: 500;
   background: var(--line-2); color: var(--text-2);
@@ -238,6 +240,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .contact-name { font-weight: 600; }
 .contact-sub { color: var(--text-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .contact-right { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.gdot { color: var(--gold); font-size: 9px; vertical-align: middle; }
 
 /* ------------------------------ dashboard -------------------------------- */
 
@@ -257,12 +260,26 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .bar-track { flex: 1; height: 7px; background: var(--line-2); border-radius: 4px; overflow: hidden; }
 .bar-fill { height: 100%; background: var(--gold); border-radius: 4px; }
 .bar-num { width: 26px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.goal-row { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; font-size: 13px; }
+.goal-label { width: 168px; color: var(--text-2); flex-shrink: 0; }
+.goal-num { width: 150px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.goal-num .muted { font-weight: 400; }
+.goal-pct { width: 52px; text-align: right; font-weight: 600; color: var(--text-3);
+  font-variant-numeric: tabular-nums; }
+.goal-pct.near { color: var(--amber); }
+.goal-pct.over { color: var(--green); }
+.bar-fill.near { background: var(--amber); }
+.bar-fill.over { background: var(--green); }
+.goal-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-2);
+  font-size: 13px; color: var(--text-2); }
+
 .list-lite { display: grid; gap: 6px; }
 .list-lite-row {
   display: flex; gap: 10px; align-items: center; padding: 8px 10px;
   background: var(--surface-2); border-radius: var(--radius-sm); cursor: pointer; font-size: 13px;
 }
 .list-lite-row:hover { background: var(--line-2); }
+.list-lite-row.dim { opacity: .5; }
 .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .panel-wide { grid-column: 1 / -1; }
 
@@ -406,4 +423,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   .drawer { width: 100%; }
   .modal-card { max-width: 100%; }
   .bar-label { width: 100px; }
+  .goal-label { width: 110px; }
+  .goal-num { width: 108px; font-size: 12px; }
+  .goal-row { gap: 8px; }
 }
