@@ -218,9 +218,10 @@ const Drive = {
 
 const TABS = {
   Contacts: ['ID', 'Name', 'Type', 'Phone', 'Email', 'Address', 'Source',
-             'Tags', 'Notes', 'Created', 'Last Contacted'],
+             'Tags', 'Notes', 'Created', 'Last Contacted', 'Google ID'],
   Deals: ['ID', 'Contact ID', 'Deal Name', 'Pipeline', 'Stage', 'Value',
-          'Property Address', 'Expected Close', 'Created', 'Stage Updated', 'Notes'],
+          'Property Address', 'Expected Close', 'Created', 'Stage Updated', 'Notes',
+          'Commission', 'GST', 'Closed Date'],
   Activities: ['ID', 'Contact ID', 'Deal ID', 'Type', 'Date', 'Summary',
                'Gmail Thread ID', 'Calendar Event ID', 'Done'],
   Settings: ['Key', 'Value'],

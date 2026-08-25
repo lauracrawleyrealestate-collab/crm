@@ -49,17 +49,66 @@ const Store = {
 
   contact(id) { return this.contacts.find(c => c.ID === id) || null; },
 
-  async saveContact(data) {
-    if (data.ID) {
+  /* Saving a contact also keeps Google Contacts in step:
+       - a brand new contact is created in Google and linked back here
+       - an edit to a linked contact is pushed to Google
+     If Google refuses (no permission, offline) the CRM save still succeeds and
+     the caller gets told via the returned `googleError`.                     */
+  async saveContact(data, opts = {}) {
+    const push = opts.pushToGoogle !== false;
+    let googleError = null;
+    const isNew = !data.ID;
+
+    if (!isNew) {
       const i = this.contacts.findIndex(c => c.ID === data.ID);
-      if (i >= 0) this.contacts[i] = Object.assign(this.contacts[i], data);
+      if (i < 0) return null;
+
+      const before = this.contacts[i];
+      const fieldsChanged = ['Name', 'Phone', 'Email', 'Address']
+        .some(k => data[k] !== undefined && String(data[k] || '') !== String(before[k] || ''));
+
+      this.contacts[i] = Object.assign(before, data);
+      const rec = this.contacts[i];
+
+      if (push && fieldsChanged && rec['Google ID']) {
+        try { await People.update(rec['Google ID'], rec); }
+        catch (e) { googleError = e.message; }
+      }
+      data = rec;
     } else {
       data.ID = this.newId('C');
       data.Created = this.today();
+
+      if (push && !data['Google ID']) {
+        try {
+          const person = await People.create(data);
+          data['Google ID'] = person.id;
+        } catch (e) { googleError = e.message; }
+      }
       this.contacts.push(data);
     }
+
     await Sheets.write('Contacts', this.contacts);
+    data._googleError = googleError;
     return data;
+  },
+
+  /* Pull an existing Google contact into the CRM (no new Google record). */
+  async linkGoogleContact(person, extra = {}) {
+    const existing = this.contacts.find(c => c['Google ID'] === person.id);
+    if (existing) return existing;
+
+    return this.saveContact(Object.assign({
+      Name: person.name,
+      Phone: person.phone,
+      Email: person.email,
+      Address: person.address,
+      Type: '',
+      Source: '',
+      Tags: '',
+      Notes: '',
+      'Google ID': person.id,
+    }, extra), { pushToGoogle: false });
   },
 
   async deleteContact(id) {

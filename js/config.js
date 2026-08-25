@@ -11,7 +11,7 @@
 
 const CONFIG = {
 
-  GOOGLE_CLIENT_ID: '955199540554-b21sr8jufdmcv0g4mqlh85vtbp6o3j8i.apps.googleusercontent.com',
+  GOOGLE_CLIENT_ID: 'PASTE_YOUR_CLIENT_ID_HERE.apps.googleusercontent.com',
 
   // Names of the files this app creates in your Google Drive.
   SPREADSHEET_NAME: 'Laura CRM Data',
@@ -30,6 +30,7 @@ const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.send',
   'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/contacts',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
 ].join(' ');
@@ -46,9 +47,25 @@ const DEFAULT_SETTINGS = {
     ],
   },
   contactTypes: ['Buyer', 'Seller', 'Both', 'Past Client', 'Referral Source'],
-  sources: ['Referral', 'Open House', 'Sign Call', 'Website', 'Social Media',
-            'Past Client', 'Realtor.ca', 'Farming', 'Other'],
-  activityTypes: ['Call', 'Email', 'Showing', 'Meeting', 'Note', 'Task'],
+  sources: ['Referral: Family', 'Referral: Friend', 'Referral: Past Client',
+            'Referral: Agent', 'Referral: Other', 'Personal Network',
+            'Sign Call / Call In', 'Open House', 'Social Media', 'Website',
+            'Realtor.ca', 'Farming', 'Other'],
+  activityTypes: ['Call', 'Email', 'Showing', 'Meeting', 'Note', 'Task',
+                  'Listing Appointment', 'Buyer Appointment'],
+
+  /* Annual targets — drives the scoreboard on the Dashboard.
+     Edit these in the Settings tab of the app or in the spreadsheet. */
+  goals: {
+    year: 2026,
+    income: 100000,
+    transactions: 10,
+    listingSales: 8,
+    buyerSales: 5,
+    listingAppts: 2,
+    buyerAppts: 4,
+    avgCommission: 10000,
+  },
 };
 
 // Stages that mean the deal is finished — hidden from the board by default.

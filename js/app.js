@@ -9,6 +9,8 @@ const App = {
   showClosed: false,
   contactQuery: '',
   contactFilter: '',
+  contactMode: 'crm',        // 'crm' = people in the CRM, 'google' = whole address book
+  googleContactsLoaded: false,
 
   /* ------------------------------- boot -------------------------------- */
 
@@ -74,6 +76,16 @@ const App = {
     $('#contact-filter').addEventListener('change', (e) => {
       this.contactFilter = e.target.value; this.renderContacts();
     });
+    $('#contact-seg').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-cmode]');
+      if (!b) return;
+      this.contactMode = b.dataset.cmode;
+      $$('#contact-seg button').forEach(x =>
+        x.classList.toggle('active', x.dataset.cmode === this.contactMode));
+      if (this.contactMode === 'google' && !this.googleContactsLoaded) this.syncContacts();
+      else this.renderContacts();
+    });
+    $('#btn-sync-contacts').addEventListener('click', () => this.syncContacts(true));
 
     // Delegated clicks for everything rendered dynamically.
     document.addEventListener('click', (e) => this.onDelegatedClick(e));
@@ -104,6 +116,7 @@ const App = {
       this.renderContactFilter();
       this.setView(this.view);
       hideLoader();
+      this.syncContacts();          // live Google Contacts, in the background
     } catch (e) {
       hideLoader();
       console.error(e);
@@ -179,11 +192,15 @@ const App = {
     $('#board').innerHTML = shown.map(stage => {
       const inStage = deals.filter(d => d.Stage === stage);
       const sum = inStage.reduce((t, d) => t + numeric(d.Value), 0);
+      const commSum = inStage.reduce((t, d) => t + numeric(d.Commission), 0);
       return '<section class="col" data-stage="' + esc(stage) + '">' +
         '<div class="col-head">' +
           '<span class="col-title">' + esc(stage) + '</span>' +
           '<span class="col-count">' + inStage.length + '</span>' +
-          (sum ? '<span class="col-sum">' + esc(money(sum)) + '</span>' : '') +
+          '<span class="col-sum">' +
+            (sum ? esc(money(sum)) : '') +
+            (commSum ? ' <b>' + esc(money(commSum)) + '</b>' : '') +
+          '</span>' +
         '</div>' +
         '<div class="col-body">' +
           (inStage.length ? inStage.map(d => this.cardHtml(d)).join('')
@@ -201,14 +218,17 @@ const App = {
     const stale = Store.isStale(d);
     const days = Store.daysSince(d['Stage Updated'] || d.Created);
     const next = Store.nextActivity(d.ID);
-    const val = money(d.Value);
+    const price = money(d.Value);
+    const comm = money(d.Commission);
 
     return '<article class="card' + (stale ? ' stale' : '') + '" draggable="true" ' +
       'data-deal="' + esc(d.ID) + '">' +
       '<div class="card-title">' + esc(d['Deal Name'] || '(untitled)') + '</div>' +
       (c ? '<div class="card-person">' + esc(c.Name) + '</div>' : '') +
       '<div class="card-meta">' +
-        (val ? '<span class="card-value">' + esc(val) + '</span>' : '') +
+        (price ? '<span class="card-price">' + esc(price) + '</span>' : '') +
+        (comm ? '<span class="card-value" title="Your commission">' +
+            esc(comm) + '</span>' : '') +
         (days != null ? '<span class="pill' + (stale ? ' warn' : '') + '">' +
             esc(relDays(days)) + ' in stage</span>' : '') +
         (d['Expected Close'] ? '<span class="pill info">closes ' +
@@ -315,8 +335,11 @@ const App = {
             this.kv('Email', c && c.Email ? '<a href="mailto:' + esc(c.Email) + '">' +
               esc(c.Email) + '</a>' : '—', true) +
             this.kv('Property', d['Property Address'] || '—') +
-            this.kv('Value', money(d.Value) || '—') +
+            this.kv('Sale price', money(d.Value) || '—') +
+            this.kv('Commission', money(d.Commission) || '—') +
+            (d.GST ? this.kv('GST', money(d.GST)) : '') +
             this.kv('Expected close', niceDate(d['Expected Close']) || '—') +
+            (d['Closed Date'] ? this.kv('Closed', niceDate(d['Closed Date'])) : '') +
             this.kv('Created', niceDate(d.Created) || '—') +
             this.kv('In stage', relDays(Store.daysSince(d['Stage Updated'] || d.Created))) +
             (d.Notes ? this.kv('Notes', d.Notes) : '') +
@@ -417,6 +440,11 @@ const App = {
             this.kv('Tags', c.Tags || '—') +
             this.kv('Added', niceDate(c.Created) || '—') +
             this.kv('Last contacted', niceDate(c['Last Contacted']) || '—') +
+            this.kv('Google Contacts', c['Google ID']
+              ? (c._missingInGoogle
+                  ? '<span class="pill warn">no longer in Google</span>'
+                  : '<span class="pill ok">linked — edits sync both ways</span>')
+              : '<span class="muted">not linked</span>', true) +
             (c.Notes ? this.kv('Notes', c.Notes) : '') +
           '</dl>' +
         '</div>' +
@@ -462,7 +490,32 @@ const App = {
 
   /* ----------------------------- contacts ------------------------------ */
 
+  /* Pull the live Google address book and fold it into the CRM records. */
+  async syncContacts(loud) {
+    $('#contact-filter').disabled = false;
+    try {
+      if (loud) showLoader('Reading Google Contacts…');
+      const r = await People.syncInto(Store);
+      this.googleContactsLoaded = true;
+      if (loud) hideLoader();
+      this.render();
+      if (loud) toast(r.total + ' Google contacts · ' +
+        (r.changed ? r.changed + ' field(s) refreshed' : 'everything already current'));
+    } catch (e) {
+      if (loud) hideLoader();
+      this.googleContactsLoaded = false;
+      if (loud || this.contactMode === 'google') {
+        toast(People.available
+          ? 'Could not read Google Contacts: ' + e.message
+          : 'Contacts permission not granted yet — sign out and back in to allow it.', true);
+      }
+      this.renderContacts();
+    }
+  },
+
   renderContacts() {
+    if (this.contactMode === 'google') return this.renderGoogleContacts();
+
     const q = this.contactQuery;
     let list = Store.contacts.slice();
 
@@ -479,7 +532,9 @@ const App = {
       return '<div class="contact-row" data-open-contact="' + esc(c.ID) + '">' +
         '<div class="avatar">' + esc(initials(c.Name)) + '</div>' +
         '<div class="contact-main">' +
-          '<div class="contact-name">' + esc(c.Name) + '</div>' +
+          '<div class="contact-name">' + esc(c.Name) +
+            (c['Google ID'] ? ' <span class="gdot" title="Linked to Google Contacts">●</span>' : '') +
+          '</div>' +
           '<div class="contact-sub">' + esc(sub || '—') + '</div>' +
         '</div>' +
         '<div class="contact-right">' +
@@ -489,7 +544,57 @@ const App = {
       '</div>';
     }).join('') : '<div class="panel"><div class="muted">' +
       (Store.contacts.length ? 'No contacts match that search.'
-                             : 'No contacts yet — add your first one.') + '</div></div>';
+                             : 'No contacts yet — add one, or switch to All Google Contacts ' +
+                               'and pull people in from your address book.') + '</div></div>';
+  },
+
+  renderGoogleContacts() {
+    const q = this.contactQuery;
+    const linked = {};
+    Store.contacts.forEach(c => { if (c['Google ID']) linked[c['Google ID']] = c; });
+
+    let list = (People._cache || []).slice();
+    if (q) list = list.filter(p =>
+      [p.name, p.email, p.phone, p.address, p.org].join(' ').toLowerCase().includes(q));
+
+    if (!People._cache) {
+      $('#contact-list').innerHTML =
+        '<div class="panel"><div class="muted">Reading your Google Contacts…</div></div>';
+      return;
+    }
+
+    $('#contact-list').innerHTML = list.length ? list.map(p => {
+      const inCrm = linked[p.id];
+      const sub = [p.phone, p.email, p.org].filter(Boolean).join(' · ');
+      return '<div class="contact-row"' +
+        (inCrm ? ' data-open-contact="' + esc(inCrm.ID) + '"' : '') + '>' +
+        '<div class="avatar">' + esc(initials(p.name)) + '</div>' +
+        '<div class="contact-main">' +
+          '<div class="contact-name">' + esc(p.name || '(no name)') + '</div>' +
+          '<div class="contact-sub">' + esc(sub || '—') + '</div>' +
+        '</div>' +
+        '<div class="contact-right">' +
+          (inCrm
+            ? '<span class="pill ok">In CRM</span>'
+            : '<button class="btn btn-sm" data-link-google="' + esc(p.id) + '">+ Add to CRM</button>') +
+        '</div>' +
+      '</div>';
+    }).join('') : '<div class="panel"><div class="muted">' +
+      (People._cache.length ? 'No Google contacts match that search.'
+                            : 'No contacts found in your Google account.') + '</div></div>';
+  },
+
+  async linkGoogle(personId) {
+    const p = People.byId(personId);
+    if (!p) return;
+    try {
+      showLoader('Adding ' + (p.name || 'contact') + '…');
+      const saved = await Store.linkGoogleContact(p);
+      hideLoader();
+      this.render();
+      this.openContact(saved.ID);
+      toast('Added to your CRM');
+    } catch (e) { hideLoader(); toast(e.message, true); }
   },
 
   /* ----------------------------- dashboard ----------------------------- */
@@ -498,6 +603,7 @@ const App = {
     const open = Store.deals.filter(d => !CLOSED_STAGES.includes(d.Stage));
     const stale = open.filter(d => Store.isStale(d));
     const pipeValue = open.reduce((t, d) => t + numeric(d.Value), 0);
+    const pipeComm = open.reduce((t, d) => t + numeric(d.Commission), 0);
 
     const now = new Date();
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0)
@@ -520,11 +626,13 @@ const App = {
     const maxStage = Math.max(1, ...Object.values(byStage));
 
     $('#dashboard').innerHTML =
+      this.goalsPanel() +
       '<div class="panel panel-wide">' +
         '<h3>At a glance</h3>' +
         '<div class="stat-grid">' +
           this.stat(open.length, 'Open deals') +
-          this.stat(money(pipeValue) || '$0', 'Pipeline value') +
+          this.stat(money(pipeValue) || '$0', 'Pipeline volume') +
+          this.stat(money(pipeComm) || '$0', 'Commission in play') +
           this.stat(closingSoon.length, 'Closing this month') +
           this.stat(stale.length, 'Need attention') +
           this.stat(Store.contacts.length, 'Contacts') +
@@ -577,6 +685,58 @@ const App = {
       '</div><div class="stat-label">' + esc(label) + '</div></div>';
   },
 
+  /* --------------------------------------------------------------------
+     Goal vs actual for the year. A deal counts once it reaches Closed;
+     the year comes from its closing date, falling back to when it was
+     moved to Closed.
+     -------------------------------------------------------------------- */
+  goalsPanel() {
+    const g = Store.settings.goals;
+    if (!g) return '';
+    const year = String(g.year || new Date().getFullYear());
+
+    const inYear = (d) => String(d['Closed Date'] || d['Stage Updated'] || '')
+      .startsWith(year);
+    const closed = Store.deals.filter(d => d.Stage === 'Closed' && inYear(d));
+
+    const income = closed.reduce((t, d) => t + numeric(d.Commission), 0);
+    const volume = closed.reduce((t, d) => t + numeric(d.Value), 0);
+    const listings = closed.filter(d => d.Pipeline === 'Seller').length;
+    const buyers = closed.filter(d => d.Pipeline === 'Buyer').length;
+
+    const apptsOf = (type) => Store.activities.filter(a =>
+      a.Type === type && String(a.Date || '').startsWith(year)).length;
+    const listingAppts = apptsOf('Listing Appointment');
+    const buyerAppts = apptsOf('Buyer Appointment');
+
+    const rows = [
+      ['Income (commission)', income, g.income, money],
+      ['Transactions', closed.length, g.transactions, String],
+      ['Listing sales', listings, g.listingSales, String],
+      ['Buyer sales', buyers, g.buyerSales, String],
+      ['Listing appointments', listingAppts, g.listingAppts, String],
+      ['Buyer appointments', buyerAppts, g.buyerAppts, String],
+    ];
+
+    return '<div class="panel panel-wide">' +
+      '<h3>' + esc(year) + ' goals — where you actually are</h3>' +
+      rows.map(([label, actual, goal, fmt]) => {
+        const pct = goal ? Math.round(actual / goal * 100) : 0;
+        const cls = pct >= 100 ? ' over' : (pct >= 60 ? ' near' : '');
+        return '<div class="goal-row">' +
+          '<span class="goal-label">' + esc(label) + '</span>' +
+          '<span class="bar-track"><span class="bar-fill' + cls + '" style="width:' +
+            Math.min(100, pct) + '%"></span></span>' +
+          '<span class="goal-num">' + esc(fmt(actual)) +
+            ' <span class="muted">/ ' + esc(fmt(goal)) + '</span></span>' +
+          '<span class="goal-pct' + cls + '">' + pct + '%</span>' +
+        '</div>';
+      }).join('') +
+      '<div class="goal-foot">Closed volume this year: <b>' +
+        esc(money(volume) || '$0') + '</b></div>' +
+    '</div>';
+  },
+
   /* ------------------------------ settings ----------------------------- */
 
   renderSettings() {
@@ -611,6 +771,16 @@ const App = {
           '<a class="btn btn-sm" target="_blank" rel="noopener" href="' + esc(Sheets.url()) +
             '">Open the spreadsheet</a>' +
           '<button class="btn btn-sm" data-export>Download CSV backup</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="panel">' +
+        '<h3>Import past business</h3>' +
+        '<p class="muted" style="margin-top:0">Pull deals, clients and appointments ' +
+          'out of a sales-tracker spreadsheet. Nothing is written until you have seen ' +
+          'a preview and said yes.</p>' +
+        '<div class="row-actions">' +
+          '<button class="btn btn-sm" data-import>Import from a spreadsheet…</button>' +
         '</div>' +
       '</div>' +
 
@@ -661,7 +831,13 @@ const App = {
       hideLoader();
       this.render();
       if (!$('#drawer').hidden) this.openContact(saved.ID);
-      toast(id ? 'Contact updated' : 'Contact added');
+      if (saved._googleError) {
+        toast('Saved to your CRM, but Google Contacts did not update: ' +
+              saved._googleError, true);
+      } else {
+        toast(id ? 'Contact updated in CRM and Google'
+                 : 'Contact added to CRM and Google Contacts');
+      }
     } catch (e) { hideLoader(); toast(e.message, true); }
   },
 
@@ -684,10 +860,14 @@ const App = {
           options: Store.pipelineNames(), value: pipeline },
         { name: 'Stage', label: 'Stage', type: 'select', options: stages,
           value: d.Stage || presets.Stage || stages[0] },
-        { name: 'Value', label: 'Value (price or commission)', value: d.Value, placeholder: '450000' },
+        { name: 'Value', label: 'Sale price', value: d.Value, placeholder: '450000' },
+        { name: 'Commission', label: 'Your commission', value: d.Commission, placeholder: '9400' },
+        { name: 'GST', label: 'GST', value: d.GST },
         { name: 'Property Address', label: 'Property address', value: d['Property Address'] },
         { name: 'Expected Close', label: 'Expected close date', type: 'date',
           value: d['Expected Close'] },
+        { name: 'Closed Date', label: 'Actual closing date', type: 'date',
+          value: d['Closed Date'] },
         { name: 'Notes', label: 'Notes', type: 'textarea', value: d.Notes },
       ],
       onRender: (form) => {
@@ -920,6 +1100,145 @@ const App = {
 
   accountMenu() { this.setView('settings'); },
 
+  /* ------------------------------ import ------------------------------ */
+
+  async importForm() {
+    const data = await Modal.open({
+      title: 'Import from a spreadsheet',
+      submitLabel: 'Read it',
+      fields: [
+        { name: 'url', label: 'Google Sheets link (or file ID)', required: true,
+          value: this._lastImportUrl || '',
+          placeholder: 'https://docs.google.com/spreadsheets/d/…' },
+      ],
+      onRender: (form) => {
+        const p = document.createElement('p');
+        p.className = 'muted';
+        p.style.margin = '0';
+        p.textContent = 'It looks for quarterly sales tabs (any tab with "Qtr" or ' +
+          '"Quarter" in the name) and an appointment tab. You will see exactly what ' +
+          'it plans to create before anything is saved.';
+        $('.modal-body', form).prepend(p);
+      },
+    });
+    if (!data) return;
+    this._lastImportUrl = data.url;
+
+    try {
+      showLoader('Reading the spreadsheet…');
+      const plan = await Importer.plan(data.url);
+      this._importPlan = plan;
+      hideLoader();
+      this.showImportPreview(plan);
+    } catch (e) {
+      hideLoader();
+      toast('Could not read that spreadsheet: ' + e.message, true);
+    }
+  },
+
+  showImportPreview(plan) {
+    const t = plan.totals;
+    const merged = plan.contacts.filter(c => c.aliases.length);
+
+    openDrawer(
+      '<div class="drawer-head">' +
+        '<div>' +
+          '<h2>Import preview</h2>' +
+          '<div class="sub">Nothing has been saved yet</div>' +
+        '</div>' +
+        '<button class="icon-btn close-x" data-close>✕</button>' +
+      '</div>' +
+
+      '<div class="drawer-body">' +
+
+        '<div class="sec">' +
+          '<div class="stat-grid">' +
+            this.stat(t.deals, 'Deals to add') +
+            this.stat(t.newContacts, 'New contacts') +
+            this.stat(plan.appointments.length, 'Appointments') +
+            this.stat(money(t.volume) || '$0', 'Volume') +
+            this.stat(money(t.commission) || '$0', 'Commission') +
+            (t.skipped ? this.stat(t.skipped, 'Already in CRM') : '') +
+          '</div>' +
+          '<div class="row-actions" style="margin-top:14px">' +
+            '<button class="btn btn-primary" data-run-import>Import it</button>' +
+            '<button class="btn" data-close>Cancel</button>' +
+          '</div>' +
+          '<div class="muted" style="margin-top:8px">Read from: ' +
+            esc(plan.salesTabs.join(', ')) +
+            (plan.apptTab ? ' · ' + esc(plan.apptTab) : '') + '</div>' +
+        '</div>' +
+
+        (merged.length ? '<div class="sec">' +
+          '<h4>Repeat clients found</h4>' +
+          '<p class="muted" style="margin-top:0">These rows are the same people ' +
+            'spelled differently, so they become one contact with several deals. ' +
+            'Check I have not merged two different people.</p>' +
+          '<div class="list-lite">' + merged.map(c =>
+            '<div class="list-lite-row">' +
+              '<span class="grow"><b>' + esc(c.name) + '</b> ' +
+                '<span class="muted">← ' + esc(c.aliases.join(' · ')) + '</span></span>' +
+              '<span class="pill">' + c.dealCount + ' deals</span>' +
+            '</div>').join('') + '</div>' +
+        '</div>' : '') +
+
+        '<div class="sec">' +
+          '<h4>Sources — tidied up</h4>' +
+          '<p class="muted" style="margin-top:0">The messy originals are kept on each ' +
+            'contact\'s tags, so you do not lose who referred whom.</p>' +
+          '<div class="list-lite">' + plan.sourceMapping.map(([clean, originals]) =>
+            '<div class="list-lite-row">' +
+              '<span class="pill ok">' + esc(clean) + '</span>' +
+              '<span class="grow muted">' + esc(originals.join(' · ')) + '</span>' +
+            '</div>').join('') + '</div>' +
+        '</div>' +
+
+        '<div class="sec">' +
+          '<h4>Deals</h4>' +
+          '<div class="list-lite">' + plan.deals.map(d =>
+            '<div class="list-lite-row' + (d.duplicate ? ' dim' : '') + '">' +
+              '<span class="pill' + (d.pipeline === 'Seller' ? '' : ' info') + '">' +
+                esc(d.pipeline) + '</span>' +
+              '<span class="grow">' + esc(d.name) +
+                ' <span class="muted">· ' + esc(d.contact || 'no name') + '</span></span>' +
+              '<span class="muted">' + esc(d.written || '?') + '</span>' +
+              '<span class="card-price">' + esc(money(d.price) || '—') + '</span>' +
+              '<span class="card-value">' + esc(money(d.commission) || '—') + '</span>' +
+              (d.duplicate ? '<span class="pill">already in</span>' : '') +
+            '</div>').join('') + '</div>' +
+        '</div>' +
+
+        (plan.warnings.length ? '<div class="sec">' +
+          '<h4>Worth a look (' + plan.warnings.length + ')</h4>' +
+          '<div class="list-lite">' + plan.warnings.map(w =>
+            '<div class="list-lite-row"><span class="pill warn">check</span>' +
+            '<span class="grow">' + esc(w) + '</span></div>').join('') + '</div>' +
+        '</div>' : '') +
+
+      '</div>'
+    );
+  },
+
+  async runImport() {
+    const plan = this._importPlan;
+    if (!plan) return;
+    try {
+      showLoader('Importing…');
+      const r = await Importer.apply(plan, (msg) => { $('#loader-text').textContent = msg; });
+      await Store.loadAll();
+      hideLoader();
+      closeDrawer();
+      this._importPlan = null;
+      this.renderPipelineSeg();
+      this.renderContactFilter();
+      this.setView('dashboard');
+      toast('Imported ' + r.deals + ' deals and ' + r.activities + ' appointments');
+    } catch (e) {
+      hideLoader();
+      toast('Import failed partway: ' + e.message + ' — check the spreadsheet before retrying.', true);
+    }
+  },
+
   /* -------------------------- event delegation ------------------------- */
 
   onDelegatedClick(e) {
@@ -968,6 +1287,9 @@ const App = {
     const editContact = hit('data-edit-contact');
     if (editContact) return this.contactForm(editContact);
 
+    const linkG = hit('data-link-google');
+    if (linkG) { e.stopPropagation(); return this.linkGoogle(linkG); }
+
     const newDealFor = hit('data-new-deal-for');
     if (newDealFor) return this.dealForm(null, { 'Contact ID': newDealFor });
 
@@ -981,6 +1303,8 @@ const App = {
     if (delAct) return this.removeActivity(delAct);
 
     if (t.closest('[data-export]')) return this.exportCsv();
+    if (t.closest('[data-import]')) return this.importForm();
+    if (t.closest('[data-run-import]')) return this.runImport();
     if (t.closest('[data-signout]')) return this.doSignOut();
 
     // ---- settings stage editing ----
