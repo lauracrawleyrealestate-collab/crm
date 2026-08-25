@@ -72,9 +72,16 @@
   <!-- ---------------- CONTACTS ---------------- -->
   <main id="view-contacts" class="view" hidden>
     <div class="view-bar">
-      <input id="contact-search" class="search wide" type="search" placeholder="Search name, email, phone, address, tag…">
-      <select id="contact-filter" class="select"></select>
-      <button class="btn btn-primary" id="btn-new-contact">+ New Contact</button>
+      <div class="seg" id="contact-seg">
+        <button data-cmode="crm" class="active">My CRM</button>
+        <button data-cmode="google">All Google Contacts</button>
+      </div>
+      <div class="view-bar-right">
+        <input id="contact-search" class="search wide" type="search" placeholder="Search name, email, phone, address, tag…">
+        <select id="contact-filter" class="select"></select>
+        <button class="btn" id="btn-sync-contacts" title="Re-read Google Contacts">Sync</button>
+        <button class="btn btn-primary" id="btn-new-contact">+ New Contact</button>
+      </div>
     </div>
     <div id="contact-list" class="contact-list"></div>
   </main>
@@ -100,7 +107,9 @@
 
 <script src="../js/config.js"></script>
 <script src="../test/mock-google.js"></script>
+<script src="../js/people.js"></script>
 <script src="../js/store.js"></script>
+<script src="../js/import.js"></script>
 <script src="../js/ui.js"></script>
 <script src="../js/app.js"></script>
 <script>window.google={accounts:{oauth2:{initTokenClient:()=>({requestAccessToken(){}}),revoke(){}}}};</script>
