@@ -227,6 +227,112 @@ const log = [];
   await page.waitForTimeout(300);
   await page.screenshot({ path: 'test/shot-contacts.png' });
 
+  // ---- bulk multi-select in the Google address book ----
+  await page.click('.tab[data-view="contacts"]');
+  await page.waitForTimeout(300);
+  await page.click('#contact-seg [data-cmode="google"]');
+  await page.waitForTimeout(600);
+
+  // Only people not already in the CRM get a tick-box.
+  const counts = await page.evaluate(() => {
+    const linked = new Set(Store.contacts.map(c => c['Google ID']).filter(Boolean));
+    return {
+      boxes: document.querySelectorAll('#contact-list [data-pick]').length,
+      spacers: document.querySelectorAll('#contact-list .pick-spacer').length,
+      addable: (People._cache || []).filter(p => !linked.has(p.id)).length,
+      total: (People._cache || []).length,
+    };
+  });
+  log.push('google list: ' + JSON.stringify(counts));
+  if (counts.boxes !== counts.addable) {
+    errors.push('tick-boxes (' + counts.boxes + ') do not match addable (' + counts.addable + ')');
+  }
+  if (counts.boxes + counts.spacers !== counts.total) {
+    errors.push('every row should have a box or a spacer');
+  }
+  if (!counts.addable) errors.push('no addable google contacts left to exercise bulk add');
+
+  // Tick one, and make sure that does NOT open the drawer.
+  const firstId = await page.$eval('#contact-list [data-pick]', n => n.getAttribute('data-pick'));
+  await page.click('#contact-list [data-pick="' + firstId + '"]');
+  await page.waitForTimeout(300);
+  if (await page.evaluate(() => App.picked.size) !== 1) errors.push('ticking did not register');
+  if (await page.evaluate(() => !document.getElementById('drawer').hidden)) {
+    errors.push('ticking a checkbox wrongly opened the drawer');
+  }
+  log.push('ticked one: ' + firstId + ' (drawer stayed shut)');
+
+  // Select-all must respect the search box.
+  const target = await page.evaluate((id) => {
+    const p = People._cache.find(x => x.id === id);
+    return p.name.split(' ').pop().toLowerCase();
+  }, firstId);
+  await page.click('[data-sel-none]');
+  await page.fill('#contact-search', target);
+  await page.waitForTimeout(300);
+  await page.click('[data-sel-all]');
+  await page.waitForTimeout(300);
+  const filtered = await page.evaluate(() => [...App.picked]);
+  log.push('search "' + target + '" + select all -> ' + filtered.length + ' picked');
+  if (!filtered.includes(firstId)) errors.push('select-all missed the filtered match');
+  if (filtered.length >= counts.addable && counts.addable > 1) {
+    errors.push('select-all ignored the search filter');
+  }
+
+  await page.fill('#contact-search', '');
+  await page.waitForTimeout(300);
+  await page.click('[data-sel-none]');
+  await page.waitForTimeout(300);
+  if (await page.evaluate(() => App.picked.size) !== 0) errors.push('Clear did not empty the selection');
+
+  // Select everything addable, then bulk add.
+  await page.click('[data-sel-all]');
+  await page.waitForTimeout(300);
+  const beforeContacts = await page.evaluate(() => Store.contacts.length);
+  const writesBefore = await page.evaluate(() => Sheets.writes.filter(w => w === 'Contacts').length);
+  const gBeforeBulk = await page.evaluate(async () => (await People.list(true)).length);
+  await page.screenshot({ path: 'test/shot-selected.png' });
+
+  await page.click('[data-bulk-add]');
+  await page.waitForSelector('#modal:not([hidden])');
+  await page.fill('#modal input[name="Tags"]', 'address book');
+  await page.click('#modal button[type="submit"]');
+  await page.waitForTimeout(1500);
+
+  const bulk = await page.evaluate(() => ({
+    contacts: Store.contacts.length,
+    tagged: Store.contacts.filter(c => c.Tags === 'address book').length,
+    typed: Store.contacts.filter(c => c.Tags === 'address book' && c.Type === 'Past Client').length,
+    linked: Store.contacts.filter(c => c.Tags === 'address book' && c['Google ID']).length,
+    picked: App.picked.size,
+  }));
+  const writes = await page.evaluate(() => Sheets.writes.filter(w => w === 'Contacts').length) - writesBefore;
+  log.push('bulk add: ' + JSON.stringify(bulk) + ' | sheet writes used: ' + writes);
+
+  if (bulk.contacts !== beforeContacts + counts.addable) {
+    errors.push('bulk add created ' + (bulk.contacts - beforeContacts) + ', expected ' + counts.addable);
+  }
+  if (bulk.tagged !== counts.addable) errors.push('shared tag not applied across the batch');
+  if (bulk.typed !== counts.addable) errors.push('shared type not applied across the batch');
+  if (bulk.linked !== counts.addable) errors.push('bulk-added contacts were not linked to Google');
+  if (bulk.picked !== 0) errors.push('selection was not cleared after adding');
+  if (writes !== 1) errors.push('bulk add used ' + writes + ' sheet writes, should be exactly 1');
+
+  // It must not create anything in Google.
+  const gAfterBulk = await page.evaluate(async () => (await People.list(true)).length);
+  log.push('google contacts around bulk add: ' + gBeforeBulk + ' -> ' + gAfterBulk);
+  if (gAfterBulk !== gBeforeBulk) errors.push('bulk add wrongly wrote to Google Contacts');
+
+  // Everyone is in the CRM now, so no tick-boxes should remain.
+  await page.waitForTimeout(300);
+  const leftover = await page.$$eval('#contact-list [data-pick]', ns => ns.length);
+  log.push('tickable rows remaining: ' + leftover);
+  if (leftover !== 0) errors.push('rows still tickable after being added');
+
+  await page.screenshot({ path: 'test/shot-bulk.png' });
+  await page.click('#contact-seg [data-cmode="crm"]');
+  await page.waitForTimeout(300);
+
   // ===================== IMPORTER =====================
 
   await page.click('.tab[data-view="settings"]');
