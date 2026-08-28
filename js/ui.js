@@ -112,6 +112,8 @@ const Modal = {
       $('[data-cancel]', form).addEventListener('click', () => this.close(null));
       if (onRender) onRender(form);
 
+      fields.filter(f => f.type === 'combo').forEach(f => this._wireCombo(form, f));
+
       const first = form.querySelector('input:not([type=hidden]), select, textarea');
       if (first && window.matchMedia('(min-width: 761px)').matches) first.focus();
     });
@@ -132,6 +134,16 @@ const Modal = {
           return '<option value="' + esc(val) + '"' +
             (String(f.value) === String(val) ? ' selected' : '') + '>' + esc(txt) + '</option>';
         }).join('') + '</select>';
+    } else if (f.type === 'combo') {
+      control =
+        '<div class="combo">' +
+          '<input class="combo-input" id="' + id + '" type="text" autocomplete="off" ' +
+            'placeholder="' + esc(f.placeholder || 'Start typing a name…') + '" ' +
+            'value="' + esc(f.text || '') + '">' +
+          '<input type="hidden" name="' + esc(f.name) + '" value="' + esc(f.value || '') + '">' +
+          '<button type="button" class="combo-clear" tabindex="-1" title="Clear">✕</button>' +
+          '<div class="combo-list" hidden></div>' +
+        '</div>';
     } else if (f.type === 'textarea') {
       control = '<textarea id="' + id + '" name="' + esc(f.name) + '" placeholder="' +
         esc(f.placeholder || '') + '">' + esc(f.value || '') + '</textarea>';
@@ -142,6 +154,73 @@ const Modal = {
         (f.step ? ' step="' + esc(f.step) + '"' : '') + '>';
     }
     return '<div class="field' + (f.half ? ' half' : '') + '">' + label + control + '</div>';
+  },
+
+  /* Type-ahead picker. `f.options` is a function returning
+     [{value, label, sub, kind}] so the list can be built fresh each keystroke. */
+  _wireCombo(form, f) {
+    const box = form.querySelector('.combo input[name="' + f.name + '"]').closest('.combo');
+    const input = box.querySelector('.combo-input');
+    const hidden = box.querySelector('input[type=hidden]');
+    const list = box.querySelector('.combo-list');
+    const clear = box.querySelector('.combo-clear');
+    let items = [], cursor = -1;
+
+    const render = () => {
+      const q = input.value.trim().toLowerCase();
+      const all = (typeof f.options === 'function' ? f.options() : f.options) || [];
+      items = q
+        ? all.filter(o => (o.label + ' ' + (o.sub || '')).toLowerCase().includes(q)).slice(0, 40)
+        : all.slice(0, 40);
+
+      if (f.allowNew && q && !items.some(o => o.label.toLowerCase() === q)) {
+        items = items.concat([{ value: 'new:' + input.value.trim(),
+                                label: 'Create “' + input.value.trim() + '”',
+                                kind: 'new' }]);
+      }
+      if (!items.length) {
+        list.innerHTML = '<div class="combo-empty">No one matches that</div>';
+      } else {
+        list.innerHTML = items.map((o, i) =>
+          '<div class="combo-item' + (i === cursor ? ' on' : '') + '" data-i="' + i +
+            '" data-value="' + esc(o.value) + '">' +
+            '<span class="combo-label">' + esc(o.label) + '</span>' +
+            (o.sub ? '<span class="combo-sub">' + esc(o.sub) + '</span>' : '') +
+            (o.kind && o.kind !== 'crm'
+              ? '<span class="pill ' + (o.kind === 'new' ? '' : 'info') + '">' +
+                (o.kind === 'new' ? 'new' : 'Google') + '</span>'
+              : '') +
+          '</div>').join('');
+      }
+      list.hidden = false;
+    };
+
+    const choose = (i) => {
+      const o = items[i];
+      if (!o) return;
+      hidden.value = o.value;
+      input.value = o.kind === 'new' ? o.value.slice(4) : o.label;
+      list.hidden = true;
+      cursor = -1;
+    };
+
+    input.addEventListener('focus', render);
+    input.addEventListener('input', () => { cursor = -1; hidden.value = ''; render(); });
+    input.addEventListener('keydown', (e) => {
+      if (list.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) return render();
+      if (e.key === 'ArrowDown') { e.preventDefault(); cursor = Math.min(cursor + 1, items.length - 1); render(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); cursor = Math.max(cursor - 1, 0); render(); }
+      else if (e.key === 'Enter' && !list.hidden && cursor >= 0) { e.preventDefault(); choose(cursor); }
+      else if (e.key === 'Escape') { list.hidden = true; }
+    });
+    list.addEventListener('mousedown', (e) => {
+      const row = e.target.closest('[data-i]');
+      if (row) { e.preventDefault(); choose(Number(row.dataset.i)); }
+    });
+    input.addEventListener('blur', () => setTimeout(() => { list.hidden = true; }, 150));
+    clear.addEventListener('click', () => {
+      input.value = ''; hidden.value = ''; input.focus(); render();
+    });
   },
 
   close(value) {
