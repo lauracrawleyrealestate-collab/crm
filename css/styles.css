@@ -24,6 +24,9 @@
   --blue-bg:     #eaf1fe;
   --red-bg:      #fdeceb;
   --radius:      10px;
+  --cal-do:       #3b6fe0;
+  --cal-deadline: #d0342c;
+  --cal-client:   #128a5a;
   --radius-sm:   7px;
   --shadow:      0 1px 2px rgba(20,22,26,.06), 0 4px 12px rgba(20,22,26,.06);
   --shadow-lg:   0 10px 40px rgba(20,22,26,.18);
@@ -37,6 +40,7 @@
     --line: #313640; --line-2: #2a2f36;
     --text: #e8eaed; --text-2: #a3acba; --text-3: #79828f;
     --amber-bg: #33290f; --green-bg: #102c1d; --blue-bg: #14213d; --red-bg: #351815;
+    --cal-do: #4a90e2; --cal-deadline: #e05a45; --cal-client: #1f9e74;
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.3);
     --shadow-lg: 0 10px 40px rgba(0,0,0,.55);
   }
@@ -271,7 +275,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; font-size: 12.5px; }
 .bar-label { width: 128px; color: var(--text-2); flex-shrink: 0; }
 .bar-track { flex: 1; height: 7px; background: var(--line-2); border-radius: 4px; overflow: hidden; }
-.bar-fill { height: 100%; background: var(--gold); border-radius: 4px; }
+.bar-fill { display: block; height: 100%; background: var(--gold); border-radius: 4px; }
 .bar-num { width: 26px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
 .goal-row { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; font-size: 13px; }
 .goal-label { width: 168px; color: var(--text-2); flex-shrink: 0; }
@@ -281,6 +285,14 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   font-variant-numeric: tabular-nums; }
 .goal-pct.near { color: var(--amber); }
 .goal-pct.over { color: var(--green); }
+.stat.clickable { cursor: pointer; transition: background .12s, transform .12s; }
+.stat.clickable:hover { background: var(--line-2); transform: translateY(-1px); }
+.bar-row.clickable { cursor: pointer; border-radius: 6px; padding: 2px 4px; margin-left: -4px;
+  transition: background .12s; }
+.bar-row.clickable:hover { background: var(--surface-2); }
+.bar-money { width: 74px; text-align: right; color: var(--text-2);
+  font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.hint { font-weight: 400; font-size: 12px; color: var(--text-3, var(--text-2)); }
 .bar-fill.near { background: var(--amber); }
 .bar-fill.over { background: var(--green); }
 .goal-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-2);
@@ -358,15 +370,28 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   background: rgba(10,12,16,.45); overflow-y: auto;
 }
 .modal-card {
-  background: var(--surface); border-radius: 14px; width: 100%; max-width: 480px;
-  box-shadow: var(--shadow-lg); max-height: 92vh; display: flex; flex-direction: column;
+  background: var(--surface); border-radius: 14px; width: 100%; max-width: 560px;
+  box-shadow: var(--shadow-lg); max-height: 88vh; display: flex; flex-direction: column;
+  overflow: hidden;
 }
-.modal-head { padding: 16px 18px 0; }
+.modal-card form { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.modal-head { padding: 16px 18px 12px; flex-shrink: 0; }
 .modal-head h3 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
-.modal-body { padding: 16px 18px; display: grid; gap: 12px; overflow-y: auto; }
+
+/* Two columns: paired fields sit side by side, everything else spans. */
+.modal-body {
+  padding: 4px 18px 18px; display: grid; gap: 12px 14px;
+  grid-template-columns: 1fr 1fr;
+  overflow-y: auto; flex: 1; min-height: 0;
+}
+.modal-body > .field { grid-column: 1 / -1; }
+.modal-body > .field.half { grid-column: auto; }
+.modal-body > p { grid-column: 1 / -1; }
+
+/* Always reachable — no scrolling to the bottom to find Save. */
 .modal-foot {
-  padding: 12px 18px 16px; display: flex; gap: 8px; justify-content: flex-end;
-  border-top: 1px solid var(--line-2);
+  padding: 12px 18px; display: flex; gap: 8px; justify-content: flex-end;
+  border-top: 1px solid var(--line); background: var(--surface-2); flex-shrink: 0;
 }
 
 .field { display: grid; gap: 5px; }
@@ -380,6 +405,34 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 }
 .field textarea { resize: vertical; min-height: 76px; }
 .field-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* ------------------------------ combo box -------------------------------- */
+
+.combo { position: relative; }
+.combo-input { width: 100%; padding-right: 30px !important; }
+.combo-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  border: 0; background: transparent; color: var(--text-3); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 5px;
+}
+.combo-clear:hover { background: var(--line-2); color: var(--text); }
+.combo-list {
+  position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg); max-height: 260px; overflow-y: auto; padding: 4px;
+}
+.combo-item {
+  padding: 7px 9px; border-radius: 5px; cursor: pointer;
+  display: flex; align-items: center; gap: 8px; font-size: 13.5px;
+}
+.combo-item:hover, .combo-item.on { background: var(--line-2); }
+.combo-label { font-weight: 500; white-space: nowrap; }
+.combo-sub {
+  color: var(--text-3); font-size: 12px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; flex: 1;
+}
+.combo-item .pill { margin-left: auto; flex-shrink: 0; }
+.combo-empty { padding: 10px; color: var(--text-3); font-size: 13px; }
 
 /* ------------------------------- settings -------------------------------- */
 
@@ -417,6 +470,87 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ------------------------------ calendar --------------------------------- */
+
+.calendar { display: grid; gap: 14px; }
+
+.cal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.cal-nav { display: flex; align-items: center; gap: 6px; }
+.cal-range { font-weight: 600; margin-left: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.chip {
+  border: 1px solid var(--line); background: var(--surface); color: var(--text-2);
+  border-radius: 999px; padding: 5px 11px; font-size: 12.5px; cursor: pointer;
+  font-family: inherit;
+}
+.chip:hover { border-color: var(--text-3); }
+.chip.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+
+.cal-warn {
+  background: var(--amber-bg); border: 1px solid var(--amber);
+  border-radius: var(--radius-sm); padding: 9px 12px; font-size: 13px;
+}
+
+.cal-layout { display: grid; grid-template-columns: minmax(0,1fr) 310px; gap: 14px;
+  align-items: start; }
+.cal-side { display: grid; gap: 14px; }
+
+.cal-week { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 8px; }
+.cal-day {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 8px; min-height: 190px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.cal-day.past { background: var(--surface-2); }
+.cal-day.today { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(179,148,92,.16); }
+.cal-day-head { display: flex; align-items: baseline; gap: 6px; }
+.cal-dow { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-3); font-weight: 600; }
+.cal-dnum { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cal-day.today .cal-dnum { color: var(--gold); }
+.cal-items { display: grid; gap: 4px; align-content: start; }
+.cal-empty { color: var(--line); font-size: 12px; }
+
+.cal-ev, .cal-rem {
+  font-size: 12px; line-height: 1.35; padding: 4px 6px; border-radius: 5px;
+  background: var(--surface-2); border-left: 3px solid var(--line);
+  display: flex; gap: 5px; align-items: baseline; cursor: default;
+  overflow: hidden; min-width: 0;
+}
+.cal-ev.crm { border-left-color: var(--gold); background: var(--amber-bg); cursor: pointer; }
+.cal-time { color: var(--text-3); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.cal-ev-t, .cal-rem-t {
+  overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; line-clamp: 2; word-break: break-word;
+}
+.cal-rem { cursor: pointer; }
+.cal-ico { flex-shrink: 0; font-size: 11px; }
+.f-do       { border-left-color: var(--cal-do); }
+.f-deadline { border-left-color: var(--cal-deadline); }
+.f-client   { border-left-color: var(--cal-client); }
+span.cal-ico.f-do { border: 0; color: var(--cal-do); }
+span.cal-ico.f-deadline { border: 0; color: var(--cal-deadline); }
+span.cal-ico.f-client { border: 0; color: var(--cal-client); }
+.cal-rem.overdue { background: var(--amber-bg); }
+.cal-rem:hover, .cal-ev.crm:hover { filter: brightness(.97); }
+
+.week-row {
+  display: flex; align-items: center; gap: 8px; font-size: 13px;
+  padding: 7px 0; border-bottom: 1px solid var(--line-2);
+}
+.week-row:last-child { border-bottom: 0; }
+.week-row .grow { flex: 1; min-width: 0; }
+.week-row .grow.link { cursor: pointer; }
+.week-row .grow.link:hover { text-decoration: underline; }
+.week-sub { display: block; font-size: 11.5px; color: var(--text-3); }
+.week-when { color: var(--text-3); font-size: 12px; flex-shrink: 0; }
+.mini {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 5px;
+  padding: 2px 6px; font-size: 12px; cursor: pointer; line-height: 1.4;
+  flex-shrink: 0; font-family: inherit;
+}
+.mini:hover { border-color: var(--gold); }
+
 /* ------------------------------- mobile ---------------------------------- */
 
 @media (max-width: 760px) {
@@ -433,10 +567,19 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   .col-body { max-height: 62vh; }
   .kv { grid-template-columns: 92px 1fr; }
   .field-2 { grid-template-columns: 1fr; }
+  .modal-body { grid-template-columns: 1fr; }
+  .modal-body > .field.half { grid-column: 1 / -1; }
+  .modal-card { max-height: 92vh; }
   .drawer { width: 100%; }
   .modal-card { max-width: 100%; }
   .bar-label { width: 100px; }
   .goal-label { width: 110px; }
   .goal-num { width: 108px; font-size: 12px; }
   .goal-row { gap: 8px; }
+  .cal-layout { grid-template-columns: 1fr; }
+  .cal-week { grid-template-columns: 1fr; }
+  .cal-day { min-height: 0; }
+  .cal-day.past { display: none; }
+  .cal-day-head { border-bottom: 1px solid var(--line-2); padding-bottom: 4px; }
+  .chips { margin-left: 0; }
 }
