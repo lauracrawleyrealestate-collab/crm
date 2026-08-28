@@ -1,30 +1,44 @@
 /* Test double for js/google.js — in-memory, no network. */
 
+/* Calendar fixtures hang off the real current week so the tests stay true
+   whatever day they are run. */
+const _pad = (n) => String(n).padStart(2, '0');
+const _iso = (d) => d.getFullYear() + '-' + _pad(d.getMonth() + 1) + '-' + _pad(d.getDate());
+const _MON = (() => { const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; })();
+const WK = (n) => { const d = new Date(_MON); d.setDate(d.getDate() + n); return _iso(d); };
+const AHEAD = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return _iso(d); };
+const BIRTHDAY_OF = (iso, year) => year + iso.slice(4);
+
 const MOCK = {
   Contacts: [
     { ID:'C-1', Name:'Dave Thompson', Type:'Buyer', Phone:'780-555-0111',
       Email:'dave.thompson@example.com', Address:'', Source:'Referral',
       Tags:'first-time buyer', Notes:'Pre-approved to 520k',
-      Created:'2026-06-02', 'Last Contacted':'2026-08-20', 'Google ID':'people/c1' },
+      Created:'2026-06-02', 'Last Contacted':'2026-08-20', 'Google ID':'people/c1',
+      Birthday: BIRTHDAY_OF(WK(3), 1981), 'Touch Cadence':'' },
     { ID:'C-2', Name:'Priya Raman', Type:'Seller', Phone:'780-555-0122',
       Email:'priya.raman@example.com', Address:'9910 108 St NW, Edmonton',
       Source:'Open House', Tags:'downsizing', Notes:'',
-      Created:'2026-05-11', 'Last Contacted':'2026-06-30', 'Google ID':'people/c2' },
+      Created:'2026-05-11', 'Last Contacted':'2026-06-30', 'Google ID':'people/c2',
+      Birthday:'', 'Touch Cadence':'Monthly' },
     { ID:'C-3', Name:'Marc Lefebvre', Type:'Both', Phone:'', Email:'',
       Address:'', Source:'Sign Call', Tags:'', Notes:'',
-      Created:'2026-03-01', 'Last Contacted':'', 'Google ID':'' },
+      Created:'2026-03-01', 'Last Contacted':'', 'Google ID':'',
+      Birthday: BIRTHDAY_OF(AHEAD(20), 1969), 'Touch Cadence':'' },
   ],
   Deals: [
     { ID:'D-1', 'Contact ID':'C-1', 'Deal Name':'Dave T — Purchase', Pipeline:'Buyer',
       Stage:'Showing Homes', Value:'495000', 'Property Address':'',
       'Expected Close':'2026-09-30', Created:'2026-06-02',
       'Stage Updated':'2026-08-18', Notes:'Wants garage',
-      Commission:'9400', GST:'470', 'Closed Date':'' },
+      Commission:'9400', GST:'470', 'Closed Date':'',
+      'Conditions Due': WK(2), 'Possession Date':'' },
     { ID:'D-2', 'Contact ID':'C-2', 'Deal Name':'9910 108 St — Listing', Pipeline:'Seller',
       Stage:'Active Listing', Value:'615000', 'Property Address':'9910 108 St NW',
       'Expected Close':'2026-08-29', Created:'2026-05-12',
       'Stage Updated':'2026-06-15', Notes:'',
-      Commission:'12300', GST:'615', 'Closed Date':'' },
+      Commission:'12300', GST:'615', 'Closed Date':'',
+      'Conditions Due':'', 'Possession Date': WK(4) },
     { ID:'D-3', 'Contact ID':'C-3', 'Deal Name':'Lefebvre — Condo hunt', Pipeline:'Buyer',
       Stage:'New Lead', Value:'', 'Property Address':'', 'Expected Close':'',
       Created:'2026-03-01', 'Stage Updated':'2026-03-01', Notes:'' },
@@ -39,6 +53,8 @@ const MOCK = {
       'Calendar Event ID':'ev1',Done:'yes' },
     { ID:'A-2','Contact ID':'C-1','Deal ID':'D-1',Type:'Call',Date:'2026-09-02',
       Summary:'Follow up on financing','Gmail Thread ID':'','Calendar Event ID':'',Done:'' },
+    { ID:'A-3','Contact ID':'C-2','Deal ID':'D-2',Type:'Task',Date: WK(3),
+      Summary:'Order new listing photos','Gmail Thread ID':'','Calendar Event ID':'',Done:'' },
   ],
   Settings: [],
 };
@@ -107,8 +123,8 @@ const Drive = {
 };
 
 const TABS = {
-  Contacts: ['ID','Name','Type','Phone','Email','Address','Source','Tags','Notes','Created','Last Contacted','Google ID'],
-  Deals: ['ID','Contact ID','Deal Name','Pipeline','Stage','Value','Property Address','Expected Close','Created','Stage Updated','Notes','Commission','GST','Closed Date'],
+  Contacts: ['ID','Name','Type','Phone','Email','Address','Source','Tags','Notes','Created','Last Contacted','Google ID','Birthday','Touch Cadence'],
+  Deals: ['ID','Contact ID','Deal Name','Pipeline','Stage','Value','Property Address','Expected Close','Created','Stage Updated','Notes','Commission','GST','Closed Date','Conditions Due','Possession Date'],
   Activities: ['ID','Contact ID','Deal ID','Type','Date','Summary','Gmail Thread ID','Calendar Event ID','Done'],
   Settings: ['Key','Value'],
 };
@@ -206,7 +222,25 @@ const GmailApi = {
   async send() { return { id: 'm1' }; },
 };
 
+let MOCK_EVENTS = [
+  { id:'ev1', title:'Showing — 3 homes, Terwillegar', date: WK(1), time:'10:00 a.m.',
+    allDay:false, location:'Terwillegar', link:'' },
+  { id:'ev-dentist', title:'Dentist', date: WK(2), time:'2:00 p.m.',
+    allDay:false, location:'', link:'' },
+  { id:'ev-open', title:'Open house 9910 108 St', date: WK(5), time:'1:00 p.m.',
+    allDay:false, location:'9910 108 St NW', link:'' },
+];
+
 const CalendarApi = {
-  async create() { return { id: 'ev-new' }; },
+  async create({ title, startISO }) {
+    const id = 'ev-' + (MOCK_EVENTS.length + 1);
+    MOCK_EVENTS.push({ id, title, date: String(startISO).slice(0, 10),
+                       time:'9:00 a.m.', allDay:false, location:'', link:'' });
+    return { id };
+  },
   async upcoming() { return []; },
+  async range(fromISO, toISO) {
+    return MOCK_EVENTS.filter(e => e.date >= fromISO && e.date <= toISO)
+      .map(e => Object.assign({}, e));
+  },
 };
