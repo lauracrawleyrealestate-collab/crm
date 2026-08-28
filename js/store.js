@@ -222,6 +222,15 @@ const Store = {
     return data;
   },
 
+  async setActivityDone(id, done = true) {
+    const a = this.activities.find(x => x.ID === id);
+    if (!a) return null;
+    a.Done = done ? 'yes' : '';
+    await Sheets.write('Activities', this.activities);
+    if (done && a['Contact ID']) await this.touchContact(a['Contact ID']);
+    return a;
+  },
+
   async deleteActivity(id) {
     this.activities = this.activities.filter(a => a.ID !== id);
     await Sheets.write('Activities', this.activities);
