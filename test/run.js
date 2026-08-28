@@ -9,7 +9,13 @@ const log = [];
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 
   page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
-  page.on('console', m => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.text()); });
+  // The sandbox has no route to fonts.googleapis.com; that is not an app fault.
+  page.on('console', m => {
+    if (m.type() !== 'error') return;
+    const txt = m.text();
+    if (/net::ERR_|fonts\.googleapis|fonts\.gstatic/.test(txt)) return;
+    errors.push('CONSOLE: ' + txt);
+  });
 
   const url = 'file://' + path.resolve('test/harness.html');
   await page.goto(url);
@@ -430,6 +436,341 @@ const log = [];
   if (goals.length !== 6) errors.push('expected 6 goal rows, got ' + goals.length);
   await page.screenshot({ path: 'test/shot-goals.png' });
 
+  // ===================== DASHBOARD DRILL-DOWNS =====================
+
+  const drillCounts = await page.evaluate(() => ({
+    stats: document.querySelectorAll('#dashboard .stat.clickable').length,
+    stages: document.querySelectorAll('#dashboard [data-drill-stage]').length,
+    months: document.querySelectorAll('#dashboard [data-drill-month]').length,
+    sources: document.querySelectorAll('#dashboard [data-drill-source]').length,
+    panels: document.querySelectorAll('#dashboard .panel h3').length,
+  }));
+  // Bars must actually paint — a <span> with no display:block renders 0x0.
+  const fillWidths = await page.evaluate(() => [...document.querySelectorAll('#dashboard .bar-fill')]
+    .map(n => Math.round(n.getBoundingClientRect().width)));
+  log.push('widest bar fill: ' + Math.max(0, ...fillWidths) + 'px across ' + fillWidths.length + ' bars');
+  if (Math.max(0, ...fillWidths) < 10) errors.push('bar fills are not rendering');
+
+  log.push('dashboard drill affordances: ' + JSON.stringify(drillCounts));
+  if (drillCounts.stats !== 6) errors.push('expected 6 clickable stats, got ' + drillCounts.stats);
+  if (!drillCounts.stages) errors.push('no clickable stage rows on the dashboard');
+  if (!drillCounts.months) errors.push('no clickable month rows on the dashboard');
+  if (!drillCounts.sources) errors.push('no clickable source rows on the dashboard');
+
+  // Closed-in-year stat opens a drawer listing exactly the deals behind it.
+  const wonExpected = await page.evaluate(() => App.closedInYear(
+    (Store.settings.goals && Store.settings.goals.year) || new Date().getFullYear()).length);
+  await page.click('#dashboard .stat.clickable[data-stat-drill="won"]');
+  await page.waitForSelector('#drawer:not([hidden])');
+  await page.waitForTimeout(250);
+  const wonDrill = await page.$$eval('#drawer .list-lite-row', ns => ns.length);
+  log.push('closed-in-year drill: ' + wonDrill + ' rows (expected ' + wonExpected + ')');
+  if (wonDrill !== wonExpected) errors.push('won drill listed ' + wonDrill + ', expected ' + wonExpected);
+  await page.screenshot({ path: 'test/shot-drill.png' });
+
+  // A row in that drawer opens the actual deal.
+  await page.click('#drawer .list-lite-row');
+  await page.waitForTimeout(300);
+  const drilledTitle = await page.textContent('#drawer h2');
+  log.push('drill -> deal: ' + drilledTitle);
+  if (!(await page.$('#drawer [data-edit-deal]'))) errors.push('drill row did not open a deal drawer');
+  await page.click('#drawer [data-close]');
+  await page.waitForTimeout(250);
+
+  // Month drill: the drawer count must match the bar's own deal count.
+  const monthProbe = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('#dashboard [data-drill-month]')];
+    const r = rows.find(n => Number(n.querySelector('.bar-num').textContent) > 0);
+    return r ? { i: r.getAttribute('data-drill-month'),
+                 n: Number(r.querySelector('.bar-num').textContent) } : null;
+  });
+  if (!monthProbe) {
+    errors.push('no month with closed deals to drill into');
+  } else {
+    await page.click('#dashboard [data-drill-month="' + monthProbe.i + '"]');
+    await page.waitForSelector('#drawer:not([hidden])');
+    await page.waitForTimeout(250);
+    const got = await page.$$eval('#drawer .list-lite-row', ns => ns.length);
+    log.push('month drill ' + monthProbe.i + ': ' + got + ' rows (bar said ' + monthProbe.n + ')');
+    if (got !== monthProbe.n) errors.push('month drill mismatch: ' + got + ' vs ' + monthProbe.n);
+    await page.click('#drawer [data-close]');
+    await page.waitForTimeout(250);
+  }
+
+  // Source drill.
+  const srcName = await page.$eval('#dashboard [data-drill-source]',
+    n => n.getAttribute('data-drill-source'));
+  await page.click('#dashboard [data-drill-source="' + srcName.replace(/"/g, '\\"') + '"]');
+  await page.waitForSelector('#drawer:not([hidden])');
+  await page.waitForTimeout(250);
+  const srcRows = await page.$$eval('#drawer .list-lite-row', ns => ns.length);
+  log.push('source drill "' + srcName + '": ' + srcRows + ' rows');
+  if (!srcRows) errors.push('source drill returned no deals');
+  await page.click('#drawer [data-close]');
+  await page.waitForTimeout(250);
+
+  // Stage drill on open deals.
+  const stageProbe = await page.evaluate(() => {
+    const r = document.querySelector('#dashboard [data-drill-stage]');
+    return { k: r.getAttribute('data-drill-stage'),
+             n: Number(r.querySelector('.bar-num').textContent) };
+  });
+  await page.click('#dashboard [data-drill-stage="' + stageProbe.k.replace(/"/g, '\\"') + '"]');
+  await page.waitForSelector('#drawer:not([hidden])');
+  await page.waitForTimeout(250);
+  const stageRows = await page.$$eval('#drawer .list-lite-row', ns => ns.length);
+  log.push('stage drill "' + stageProbe.k + '": ' + stageRows + ' (bar said ' + stageProbe.n + ')');
+  if (stageRows !== stageProbe.n) errors.push('stage drill mismatch: ' + stageRows + ' vs ' + stageProbe.n);
+  await page.click('#drawer [data-close]');
+  await page.waitForTimeout(250);
+
+  await page.screenshot({ path: 'test/shot-dash-full.png', fullPage: true });
+
+  // ===================== NEW-DEAL MODAL =====================
+
+  // Someone who exists in Google but NOT in the CRM — the case the old picker missed.
+  await page.evaluate(async () => {
+    await People.create({ Name: 'Wendell Ashcroft', Phone: '780-555-3131',
+                          Email: 'wendell@example.com' });
+    await People.list(true);
+  });
+
+  await page.click('.tab[data-view="pipeline"]');
+  await page.waitForTimeout(300);
+  await page.click('#btn-new-deal');
+  await page.waitForSelector('#modal:not([hidden])');
+  await page.waitForTimeout(200);
+
+  // Save/Cancel must be reachable without scrolling to the bottom of the fields.
+  const foot = await page.evaluate(() => {
+    const card = document.querySelector('.modal-card');
+    const f = document.querySelector('.modal-foot');
+    const body = document.querySelector('.modal-body');
+    return {
+      footBottom: Math.round(f.getBoundingClientRect().bottom),
+      cardBottom: Math.round(card.getBoundingClientRect().bottom),
+      viewport: window.innerHeight,
+      bodyScrolls: body.scrollHeight > body.clientHeight + 1,
+      halves: document.querySelectorAll('.modal-body .field.half').length,
+      cols: getComputedStyle(body).gridTemplateColumns.split(' ').length,
+    };
+  });
+  log.push('modal layout: ' + JSON.stringify(foot));
+  if (foot.footBottom > foot.viewport) errors.push('modal footer sits below the viewport');
+  if (Math.abs(foot.footBottom - foot.cardBottom) > 2) errors.push('footer is not pinned to the card');
+  if (foot.cols !== 2) errors.push('modal fields are not on a two-column grid');
+  if (foot.halves < 6) errors.push('expected paired fields, got ' + foot.halves + ' halves');
+
+  await page.screenshot({ path: 'test/shot-modal.png' });
+
+  // Type-ahead reaches the whole Google address book, not just CRM contacts.
+  await page.fill('.combo-input', 'wend');
+  await page.waitForTimeout(300);
+  const opts = await page.$$eval('.combo-list .combo-item',
+    ns => ns.map(n => n.getAttribute('data-value') + ' :: ' + n.querySelector('.combo-label').textContent));
+  log.push('combo "wend" -> ' + opts.join(' | '));
+  const gOpt = opts.find(o => o.indexOf('google:') === 0);
+  if (!gOpt) errors.push('type-ahead did not surface the Google-only contact');
+
+  await page.click('.combo-list .combo-item[data-value^="google:"]');
+  await page.waitForTimeout(200);
+  await page.fill('#modal input[name="Deal Name"]', 'Ashcroft — Purchase');
+  await page.fill('#modal input[name="Value"]', '450000');
+  await page.click('#modal button[type="submit"]');
+  await page.waitForTimeout(900);
+
+  const made = await page.evaluate(() => {
+    const d = Store.deals.find(x => x['Deal Name'] === 'Ashcroft — Purchase');
+    const c = d && Store.contact(d['Contact ID']);
+    return { deal: !!d, contact: c && c.Name, googleId: c && c['Google ID'], phone: c && c.Phone };
+  });
+  log.push('deal from Google-only contact: ' + JSON.stringify(made));
+  if (!made.deal) errors.push('new deal was not saved');
+  if (made.contact !== 'Wendell Ashcroft') errors.push('picked Google contact was not linked to the deal');
+  if (!made.googleId) errors.push('linked contact lost its Google ID');
+
+  // "New: <name>" path still works for someone who exists nowhere.
+  await page.click('#btn-new-deal');
+  await page.waitForSelector('#modal:not([hidden])');
+  await page.fill('.combo-input', 'Harriet Vane');
+  await page.waitForTimeout(300);
+  const newOpt = await page.$('.combo-list .combo-item[data-value^="new:"]');
+  if (!newOpt) errors.push('combo did not offer to create an unknown contact');
+  else {
+    await newOpt.click();
+    await page.waitForTimeout(150);
+    await page.fill('#modal input[name="Deal Name"]', 'Vane — Listing');
+    await page.click('#modal button[type="submit"]');
+    await page.waitForTimeout(900);
+    const vane = await page.evaluate(() => {
+      const d = Store.deals.find(x => x['Deal Name'] === 'Vane — Listing');
+      const c = d && Store.contact(d['Contact ID']);
+      return c && c.Name;
+    });
+    log.push('created-on-the-fly contact: ' + vane);
+    if (vane !== 'Harriet Vane') errors.push('inline contact creation failed, got ' + vane);
+  }
+
+  // ===================== CALENDAR =====================
+
+  await page.click('.tab[data-view="calendar"]');
+  await page.waitForSelector('#calendar .cal-week');
+  await page.waitForTimeout(500);
+
+  const week = await page.evaluate(() => ({
+    days: document.querySelectorAll('.cal-day').length,
+    heads: [...document.querySelectorAll('.cal-dow')].map(n => n.textContent),
+    today: document.querySelectorAll('.cal-day.today').length,
+    events: document.querySelectorAll('.cal-ev').length,
+    crmEvents: document.querySelectorAll('.cal-ev.crm').length,
+    reminders: document.querySelectorAll('.cal-rem').length,
+    range: document.querySelector('.cal-range').textContent,
+  }));
+  log.push('calendar week: ' + JSON.stringify(week));
+  if (week.days !== 7) errors.push('week view should have 7 days, got ' + week.days);
+  if (week.heads[0] !== 'Mon' || week.heads[6] !== 'Sun') {
+    errors.push('week should run Mon..Sun, got ' + week.heads.join(','));
+  }
+  if (week.today !== 1) errors.push('today is not highlighted exactly once');
+  if (week.events !== 3) errors.push('expected 3 Google events this week, got ' + week.events);
+  if (week.crmEvents !== 1) errors.push('the CRM-created event was not highlighted');
+  if (week.reminders < 4) errors.push('expected several reminders, got ' + week.reminders);
+
+  // The derived reminders must be the real ones, not placeholders.
+  const kinds = await page.evaluate(() =>
+    [...document.querySelectorAll('.cal-rem')].map(n => n.getAttribute('data-rem-kind')));
+  log.push('reminder kinds on screen: ' + kinds.join(', '));
+  ['birthday', 'touchpoint', 'conditions', 'possession', 'close', 'task'].forEach(k => {
+    if (!kinds.includes(k)) errors.push('no ' + k + ' reminder rendered');
+  });
+
+  // An overdue monthly touchpoint should be flagged, not silently listed.
+  const overdue = await page.$$eval('.cal-rem.overdue', ns => ns.length);
+  log.push('overdue reminders flagged: ' + overdue);
+  if (!overdue) errors.push('overdue touchpoint was not flagged');
+
+  await page.screenshot({ path: 'test/shot-calendar.png', fullPage: true });
+
+  // Filters hide a category and the choice is written back to Settings.
+  const beforeFilter = await page.$$eval('.cal-rem', ns => ns.length);
+  await page.click('.chip[data-cal-filter="birthday"]');
+  await page.waitForTimeout(400);
+  const afterFilter = await page.$$eval('.cal-rem', ns => ns.length);
+  const savedPref = await page.evaluate(() => Store.settings.calendarShow.birthday);
+  log.push('birthdays off: ' + beforeFilter + ' -> ' + afterFilter + ' reminders, saved=' + savedPref);
+  if (afterFilter >= beforeFilter) errors.push('turning a filter off did not remove anything');
+  if (savedPref !== false) errors.push('filter choice was not saved to Settings');
+  await page.click('.chip[data-cal-filter="birthday"]');
+  await page.waitForTimeout(400);
+  if (await page.$$eval('.cal-rem', ns => ns.length) !== beforeFilter) {
+    errors.push('turning the filter back on did not restore the reminders');
+  }
+
+  // Hiding Google events leaves the CRM half of the view working.
+  await page.click('.chip[data-cal-filter="google"]');
+  await page.waitForTimeout(400);
+  const noGoogle = await page.$$eval('.cal-ev', ns => ns.length);
+  log.push('google events hidden -> ' + noGoogle + ' event chips');
+  if (noGoogle !== 0) errors.push('hiding calendar events did not work');
+  await page.click('.chip[data-cal-filter="google"]');
+  await page.waitForTimeout(400);
+
+  // Week navigation.
+  const thisRange = await page.textContent('.cal-range');
+  await page.click('[data-cal-nav="next"]');
+  await page.waitForTimeout(500);
+  const nextRange = await page.textContent('.cal-range');
+  const nextEvents = await page.$$eval('.cal-ev', ns => ns.length);
+  log.push('next week: ' + nextRange + ' with ' + nextEvents + ' events');
+  if (nextRange === thisRange) errors.push('next week did not advance the range');
+  if (await page.$$eval('.cal-day.today', ns => ns.length)) {
+    errors.push('"today" highlight leaked into another week');
+  }
+  await page.click('[data-cal-nav="today"]');
+  await page.waitForTimeout(500);
+  if (await page.textContent('.cal-range') !== thisRange) errors.push('Today did not come back');
+
+  // A CRM-created calendar event opens the deal it belongs to.
+  await page.click('.cal-ev.crm');
+  await page.waitForSelector('#drawer:not([hidden])');
+  await page.waitForTimeout(250);
+  log.push('clicking the CRM event opened: ' + await page.textContent('#drawer h2'));
+  if (!(await page.$('#drawer [data-edit-deal]'))) {
+    errors.push('CRM calendar event did not open its deal');
+  }
+  await page.click('#drawer [data-close]');
+  await page.waitForTimeout(250);
+
+  // Ticking a to-do off removes it from the week.
+  const beforeTask = await page.$$eval('.cal-rem[data-rem-kind="task"]', ns => ns.length);
+  await page.click('.week-row [data-rem-done]');
+  await page.waitForTimeout(900);
+  const afterTask = await page.$$eval('.cal-rem[data-rem-kind="task"]', ns => ns.length);
+  const doneFlag = await page.evaluate(() =>
+    Store.activities.filter(a => a.Done === 'yes').length);
+  log.push('to-dos ' + beforeTask + ' -> ' + afterTask + ', activities marked done: ' + doneFlag);
+  if (afterTask >= beforeTask) errors.push('ticking a to-do did not clear it');
+
+  // Scheduling straight off a reminder creates a real calendar event.
+  const evBefore = await page.evaluate(async () =>
+    (await CalendarApi.range('2000-01-01', '2099-01-01')).length);
+  await page.click('.week-row [data-rem-schedule]');
+  await page.waitForSelector('#modal:not([hidden])');
+  const prefill = await page.inputValue('#modal input[name="title"]');
+  log.push('schedule-from-reminder prefilled: ' + prefill);
+  if (!prefill) errors.push('the schedule form did not prefill from the reminder');
+  await page.click('#modal button[type="submit"]');
+  await page.waitForTimeout(1200);
+  const evAfter = await page.evaluate(async () =>
+    (await CalendarApi.range('2000-01-01', '2099-01-01')).length);
+  log.push('calendar events ' + evBefore + ' -> ' + evAfter);
+  if (evAfter !== evBefore + 1) errors.push('scheduling from a reminder created no event');
+  if (!(await page.$('#drawer[hidden]'))) {
+    errors.push('scheduling from the calendar should not hijack the view with a drawer');
+  }
+
+  // "Coming up" catches the birthday that sits beyond this week.
+  const coming = await page.$$eval('.cal-side .panel:last-child .week-row',
+    ns => ns.map(n => n.textContent.trim()));
+  log.push('coming up: ' + coming.join(' | '));
+  if (!coming.length) errors.push('the Coming up panel is empty');
+
+  // New date fields survive a round trip through the deal form.
+  await page.click('.tab[data-view="pipeline"]');
+  await page.waitForTimeout(300);
+  await page.click('#board .card[data-deal="D-1"]');
+  await page.waitForSelector('#drawer:not([hidden])');
+  await page.click('#drawer [data-edit-deal]');
+  await page.waitForSelector('#modal:not([hidden])');
+  await page.fill('#modal input[name="Possession Date"]', '2026-12-15');
+  await page.click('#modal button[type="submit"]');
+  await page.waitForTimeout(700);
+  const poss = await page.evaluate(() => Store.deal('D-1')['Possession Date']);
+  log.push('possession date saved: ' + poss);
+  if (poss !== '2026-12-15') errors.push('possession date did not save, got ' + poss);
+  await page.click('#drawer [data-close]');
+  await page.waitForTimeout(250);
+
+  // Birthday + cadence survive a round trip through the contact form.
+  await page.click('.tab[data-view="contacts"]');
+  await page.waitForTimeout(300);
+  await page.click('#contact-list .contact-row');
+  await page.waitForSelector('#drawer:not([hidden])');
+  await page.click('#drawer [data-edit-contact]');
+  await page.waitForSelector('#modal:not([hidden])');
+  await page.fill('#modal input[name="Birthday"]', '1984-04-02');
+  await page.selectOption('#modal select[name="Touch Cadence"]', 'Quarterly');
+  await page.click('#modal button[type="submit"]');
+  await page.waitForTimeout(900);
+  const bd = await page.evaluate(() => {
+    const c = Store.contacts.find(x => x.Birthday === '1984-04-02');
+    return c && { name: c.Name, cadence: c['Touch Cadence'] };
+  });
+  log.push('birthday saved: ' + JSON.stringify(bd));
+  if (!bd || bd.cadence !== 'Quarterly') errors.push('birthday/cadence did not save');
+  await page.click('#drawer [data-close]');
+  await page.waitForTimeout(250);
+
   // --- back to board, take a mobile shot ---
   await page.click('.tab[data-view="pipeline"]');
   await page.waitForTimeout(200);
@@ -438,6 +779,15 @@ const log = [];
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(400);
   await page.screenshot({ path: 'test/shot-mobile.png' });
+
+  await page.click('.tab[data-view="calendar"]');
+  await page.waitForSelector('#calendar .cal-week');
+  await page.waitForTimeout(600);
+  const mobileCols = await page.evaluate(() =>
+    getComputedStyle(document.querySelector('.cal-week')).gridTemplateColumns.split(' ').length);
+  log.push('mobile calendar columns: ' + mobileCols);
+  if (mobileCols !== 1) errors.push('calendar should stack to one column on a phone');
+  await page.screenshot({ path: 'test/shot-calendar-mobile.png', fullPage: true });
 
   await browser.close();
 
