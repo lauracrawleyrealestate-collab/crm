@@ -218,10 +218,11 @@ const Drive = {
 
 const TABS = {
   Contacts: ['ID', 'Name', 'Type', 'Phone', 'Email', 'Address', 'Source',
-             'Tags', 'Notes', 'Created', 'Last Contacted', 'Google ID'],
+             'Tags', 'Notes', 'Created', 'Last Contacted', 'Google ID',
+             'Birthday', 'Touch Cadence'],
   Deals: ['ID', 'Contact ID', 'Deal Name', 'Pipeline', 'Stage', 'Value',
           'Property Address', 'Expected Close', 'Created', 'Stage Updated', 'Notes',
-          'Commission', 'GST', 'Closed Date'],
+          'Commission', 'GST', 'Closed Date', 'Conditions Due', 'Possession Date'],
   Activities: ['ID', 'Contact ID', 'Deal ID', 'Type', 'Date', 'Summary',
                'Gmail Thread ID', 'Calendar Event ID', 'Done'],
   Settings: ['Key', 'Value'],
@@ -420,6 +421,30 @@ const CalendarApi = {
     };
     if (attendeeEmail) body.attendees = [{ email: attendeeEmail }];
     return jsonPost('https://www.googleapis.com/calendar/v3/calendars/primary/events', body);
+  },
+
+  /* Everything on the primary calendar between two local dates, inclusive.
+     singleEvents expands recurring series so each week shows real occurrences. */
+  async range(fromISO, toISO) {
+    const start = new Date(fromISO + 'T00:00:00');
+    const end = new Date(toISO + 'T23:59:59');
+    const r = await api('https://www.googleapis.com/calendar/v3/calendars/primary/events' +
+      '?timeMin=' + encodeURIComponent(start.toISOString()) +
+      '&timeMax=' + encodeURIComponent(end.toISOString()) +
+      '&maxResults=250&singleEvents=true&orderBy=startTime');
+    return (r.items || []).map(ev => {
+      const s = ev.start || {};
+      return {
+        id: ev.id,
+        title: ev.summary || '(no title)',
+        date: (s.date || (s.dateTime || '').slice(0, 10)),
+        time: s.dateTime ? new Date(s.dateTime)
+          .toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '',
+        allDay: !!s.date,
+        location: ev.location || '',
+        link: ev.htmlLink || '',
+      };
+    }).filter(e => e.date);
   },
 
   async upcoming(maxResults = 10) {
