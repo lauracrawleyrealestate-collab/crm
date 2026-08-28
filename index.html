@@ -44,6 +44,7 @@
     <nav class="tabs" id="tabs">
       <button class="tab active" data-view="pipeline">Pipeline</button>
       <button class="tab" data-view="contacts">Contacts</button>
+      <button class="tab" data-view="calendar">Calendar</button>
       <button class="tab" data-view="dashboard">Dashboard</button>
       <button class="tab" data-view="settings">Settings</button>
     </nav>
@@ -86,6 +87,11 @@
     <div id="contact-list" class="contact-list"></div>
   </main>
 
+  <!-- ---------------- CALENDAR ---------------- -->
+  <main id="view-calendar" class="view" hidden>
+    <div id="calendar" class="calendar"></div>
+  </main>
+
   <!-- ---------------- DASHBOARD ---------------- -->
   <main id="view-dashboard" class="view" hidden>
     <div id="dashboard" class="dashboard"></div>
@@ -111,6 +117,7 @@
 <script src="js/people.js"></script>
 <script src="js/store.js"></script>
 <script src="js/import.js"></script>
+<script src="js/reminders.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/app.js"></script>
 </body>
