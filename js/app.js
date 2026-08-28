@@ -12,6 +12,10 @@ const App = {
   contactMode: 'crm',        // 'crm' = people in the CRM, 'google' = whole address book
   googleContactsLoaded: false,
   picked: new Set(),         // Google contacts ticked for a bulk add
+  calWeek: null,             // Monday of the week on screen (ISO date)
+  calEvents: [],             // Google Calendar events for that week
+  calState: 'idle',          // idle | loading | error
+  calError: '',
 
   /* ------------------------------- boot -------------------------------- */
 
@@ -144,14 +148,19 @@ const App = {
   setView(v) {
     this.view = v;
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
-    ['pipeline', 'contacts', 'dashboard', 'settings']
+    ['pipeline', 'contacts', 'calendar', 'dashboard', 'settings']
       .forEach(name => { $('#view-' + name).hidden = (name !== v); });
+    if (v === 'calendar' && !this.calWeek) this.calWeek = weekStart(todayISO());
     this.render();
+    // Entering the calendar always re-reads Google, so it reflects anything
+    // scheduled from her phone or by someone else since she last looked.
+    if (v === 'calendar') this.loadWeek();
   },
 
   render() {
     if (this.view === 'pipeline') this.renderBoard();
     else if (this.view === 'contacts') this.renderContacts();
+    else if (this.view === 'calendar') this.renderCalendar();
     else if (this.view === 'dashboard') this.renderDashboard();
     else if (this.view === 'settings') this.renderSettings();
   },
@@ -685,7 +694,240 @@ const App = {
     } catch (e) { hideLoader(); toast(e.message, true); }
   },
 
+  /* ------------------------------ calendar ------------------------------
+     A week of Laura's real Google Calendar with the CRM's own dates layered
+     on top. The reminders are derived (see reminders.js), so this view is
+     always current without her keeping a second list.
+     ---------------------------------------------------------------------- */
+
+  CAL_FILTERS: [
+    { key: 'google',      label: 'Calendar events' },
+    { key: 'task',        label: 'To-dos' },
+    { key: 'deadline',    label: 'Deal dates' },
+    { key: 'touchpoint',  label: 'Touch base' },
+    { key: 'birthday',    label: 'Birthdays' },
+    { key: 'anniversary', label: 'Anniversaries' },
+  ],
+
+  calShow() {
+    const saved = Store.settings.calendarShow || {};
+    const out = {};
+    this.CAL_FILTERS.forEach(f => {
+      out[f.key] = saved[f.key] === undefined ? true : !!saved[f.key];
+    });
+    return out;
+  },
+
+  async toggleCalFilter(key) {
+    const show = this.calShow();
+    show[key] = !show[key];
+    Store.settings.calendarShow = show;
+    this.renderCalendar();
+    try { await Store.saveSettings(); } catch (e) { /* view still works */ }
+  },
+
+  calDays() {
+    const start = this.calWeek || weekStart(todayISO());
+    return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  },
+
+  moveWeek(where) {
+    const start = this.calWeek || weekStart(todayISO());
+    this.calWeek = where === 'today' ? weekStart(todayISO())
+                 : addDays(start, where === 'prev' ? -7 : 7);
+    this.renderCalendar();
+    this.loadWeek();
+  },
+
+  /* Google Calendar is fetched per week; a failure here must never blank the
+     page, because the CRM half of this view works without it. */
+  async loadWeek() {
+    const days = this.calDays();
+    const from = days[0], to = days[6];
+    this.calState = 'loading';
+    this.renderCalendar();
+    try {
+      const events = await CalendarApi.range(from, to);
+      if (this.calDays()[0] !== from) return;      // she moved on while we waited
+      this.calEvents = events;
+      this.calState = 'idle';
+      this.calError = '';
+    } catch (e) {
+      this.calEvents = [];
+      this.calState = 'error';
+      this.calError = e.message || 'Could not reach Google Calendar.';
+    }
+    if (this.view === 'calendar') this.renderCalendar();
+  },
+
+  renderCalendar() {
+    const days = this.calDays();
+    const from = days[0], to = days[6];
+    const today = todayISO();
+    const show = this.calShow();
+
+    // Which calendar events did the CRM itself create?
+    const byEventId = {};
+    Store.activities.forEach(a => {
+      if (a['Calendar Event ID']) byEventId[a['Calendar Event ID']] = a;
+    });
+
+    const reminders = Reminders.forRange(from, to)
+      .filter(r => show[Reminders.GROUP[r.kind]]);
+    this._calReminders = reminders;
+
+    const events = show.google ? this.calEvents : [];
+
+    const label = shortDate(from) + ' – ' +
+      (parseISO(from).getMonth() === parseISO(to).getMonth()
+        ? parseISO(to).getDate() : shortDate(to)) +
+      ', ' + parseISO(to).getFullYear();
+
+    const chips = this.CAL_FILTERS.map(f =>
+      '<button class="chip' + (show[f.key] ? ' on' : '') + '" data-cal-filter="' +
+        esc(f.key) + '">' + esc(f.label) + '</button>').join('');
+
+    const dayCells = days.map(d => {
+      const evs = events.filter(e => e.date === d);
+      const rems = reminders.filter(r => r.date === d);
+      return '<div class="cal-day' + (d === today ? ' today' : '') +
+               (d < today ? ' past' : '') + '" data-day="' + d + '">' +
+        '<div class="cal-day-head"><span class="cal-dow">' + dayName(d) + '</span>' +
+          '<span class="cal-dnum">' + parseISO(d).getDate() + '</span></div>' +
+        '<div class="cal-items">' +
+          evs.map(e => this.calEventChip(e, byEventId[e.id])).join('') +
+          rems.map(r => this.calReminderChip(r)).join('') +
+          (!evs.length && !rems.length ? '<div class="cal-empty">—</div>' : '') +
+        '</div></div>';
+    }).join('');
+
+    $('#calendar').innerHTML =
+      '<div class="cal-bar">' +
+        '<div class="cal-nav">' +
+          '<button class="icon-btn" data-cal-nav="prev" title="Previous week">‹</button>' +
+          '<button class="btn" data-cal-nav="today">Today</button>' +
+          '<button class="icon-btn" data-cal-nav="next" title="Next week">›</button>' +
+          '<span class="cal-range">' + esc(label) + '</span>' +
+          (this.calState === 'loading' ? '<span class="muted"> · loading…</span>' : '') +
+        '</div>' +
+        '<div class="chips">' + chips + '</div>' +
+      '</div>' +
+
+      (this.calState === 'error'
+        ? '<div class="cal-warn">Your CRM dates are below. Google Calendar did not load: ' +
+          esc(this.calError) + '</div>' : '') +
+
+      '<div class="cal-layout">' +
+        '<div class="cal-week">' + dayCells + '</div>' +
+        '<aside class="cal-side">' +
+          this.weekPanel(reminders, events) +
+          this.comingUpPanel(to) +
+        '</aside>' +
+      '</div>';
+  },
+
+  calEventChip(e, activity) {
+    const linked = !!activity;
+    const target = linked && activity['Deal ID']
+      ? ' data-open-deal="' + esc(activity['Deal ID']) + '"'
+      : (linked && activity['Contact ID']
+          ? ' data-open-contact="' + esc(activity['Contact ID']) + '"' : '');
+    return '<div class="cal-ev' + (linked ? ' crm' : '') + '"' + target +
+      ' title="' + esc(e.title + (e.location ? ' · ' + e.location : '')) + '">' +
+      (e.allDay ? '' : '<span class="cal-time">' + esc(e.time) + '</span>') +
+      '<span class="cal-ev-t">' + esc(e.title) + '</span></div>';
+  },
+
+  calReminderChip(r) {
+    const target = r.dealId ? ' data-open-deal="' + esc(r.dealId) + '"'
+                 : (r.contactId ? ' data-open-contact="' + esc(r.contactId) + '"' : '');
+    return '<div class="cal-rem f-' + esc(Reminders.FAMILY[r.kind]) +
+      (r.overdue ? ' overdue' : '') + '"' + target +
+      ' data-rem-kind="' + esc(r.kind) + '"' +
+      ' title="' + esc(Reminders.LABEL[r.kind] + ' · ' + r.title +
+                       (r.sub ? ' · ' + r.sub : '')) + '">' +
+      '<span class="cal-ico">' + Reminders.ICON[r.kind] + '</span>' +
+      '<span class="cal-rem-t">' + esc(r.title) + '</span></div>';
+  },
+
+  weekPanel(reminders, events) {
+    const rows = reminders.map((r, i) =>
+      '<div class="week-row">' +
+        '<span class="cal-ico f-' + esc(Reminders.FAMILY[r.kind]) + '" title="' +
+          esc(Reminders.LABEL[r.kind]) + '">' + Reminders.ICON[r.kind] + '</span>' +
+        '<span class="grow' + (r.dealId || r.contactId ? ' link' : '') + '"' +
+          (r.dealId ? ' data-open-deal="' + esc(r.dealId) + '"'
+                    : (r.contactId ? ' data-open-contact="' + esc(r.contactId) + '"' : '')) + '>' +
+          esc(r.title) +
+          (r.sub ? '<span class="week-sub">' + esc(r.sub) + '</span>' : '') +
+        '</span>' +
+        '<span class="week-when">' + esc(dayName(r.date)) + '</span>' +
+        (r.activityId
+          ? '<button class="mini" data-rem-done="' + esc(r.activityId) + '" title="Mark done">✓</button>'
+          : '') +
+        '<button class="mini" data-rem-schedule="' + i + '" title="Put on my calendar">📅</button>' +
+      '</div>').join('');
+
+    return '<div class="panel">' +
+      '<h3>This week <span class="hint">— ' + events.length + ' event' +
+        (events.length === 1 ? '' : 's') + ', ' + reminders.length + ' reminder' +
+        (reminders.length === 1 ? '' : 's') + '</span></h3>' +
+      (reminders.length ? rows
+        : '<div class="muted">Nothing the CRM wants from you this week.</div>') +
+    '</div>';
+  },
+
+  /* Birthdays and sale anniversaries far enough out to actually plan a card
+     or a drop-by — the past-client habit that keeps referrals coming. */
+  comingUpPanel(afterISO) {
+    const soon = Reminders.forRange(addDays(afterISO, 1), addDays(afterISO, 45))
+      .filter(r => r.kind === 'birthday' || r.kind === 'anniversary')
+      .slice(0, 10);
+
+    return '<div class="panel">' +
+      '<h3>Coming up <span class="hint">— next 45 days</span></h3>' +
+      (soon.length ? soon.map(r =>
+        '<div class="week-row">' +
+          '<span class="cal-ico f-' + esc(Reminders.FAMILY[r.kind]) + '" title="' +
+            esc(Reminders.LABEL[r.kind]) + '">' + Reminders.ICON[r.kind] + '</span>' +
+          '<span class="grow link"' +
+            (r.contactId ? ' data-open-contact="' + esc(r.contactId) + '"' : '') + '>' +
+            esc(r.title) + '</span>' +
+          '<span class="week-when">' + esc(shortDate(r.date)) + '</span>' +
+        '</div>').join('')
+        : '<div class="muted">Add birthdays to your contacts and they will show up here.</div>') +
+    '</div>';
+  },
+
+  async markReminderDone(activityId) {
+    try {
+      showLoader('Saving…');
+      await Store.setActivityDone(activityId);
+      hideLoader();
+      this.render();
+      toast('Ticked off');
+    } catch (e) { hideLoader(); toast(e.message, true); }
+  },
+
+  scheduleReminder(i) {
+    const r = (this._calReminders || [])[Number(i)];
+    if (!r) return;
+    this.scheduleForm(r.dealId || null, {
+      contactId: r.contactId,
+      title: r.title,
+      dateISO: r.date < todayISO() ? todayISO() : r.date,
+      type: r.kind === 'touchpoint' ? 'Call' : 'Note',
+      openAfter: false,
+    });
+  },
+
   /* ----------------------------- dashboard ----------------------------- */
+
+  closedInYear(year) {
+    const y = String(year);
+    return Store.deals.filter(d => d.Stage === 'Closed' &&
+      String(d['Closed Date'] || d['Stage Updated'] || '').startsWith(y));
+  },
 
   renderDashboard() {
     const open = Store.deals.filter(d => !CLOSED_STAGES.includes(d.Stage));
@@ -694,14 +936,14 @@ const App = {
     const pipeComm = open.reduce((t, d) => t + numeric(d.Commission), 0);
 
     const now = new Date();
+    const year = (Store.settings.goals && Store.settings.goals.year) || now.getFullYear();
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0)
       .toISOString().slice(0, 10);
     const closingSoon = open
       .filter(d => d['Expected Close'] && d['Expected Close'] <= monthEnd)
       .sort((a, b) => String(a['Expected Close']).localeCompare(String(b['Expected Close'])));
 
-    const wonThisYear = Store.deals.filter(d =>
-      d.Stage === 'Closed' && String(d['Stage Updated'] || '').startsWith(String(now.getFullYear())));
+    const won = this.closedInYear(year);
 
     const noActivity = Store.contacts.filter(c => {
       const days = Store.daysSince(c['Last Contacted'] || c.Created);
@@ -709,33 +951,41 @@ const App = {
     }).sort((a, b) => String(a['Last Contacted'] || '').localeCompare(String(b['Last Contacted'] || '')));
 
     const byStage = {};
-    open.forEach(d => { byStage[d.Pipeline + ' · ' + d.Stage] =
-      (byStage[d.Pipeline + ' · ' + d.Stage] || 0) + 1; });
-    const maxStage = Math.max(1, ...Object.values(byStage));
+    open.forEach(d => {
+      const k = d.Pipeline + ' · ' + d.Stage;
+      (byStage[k] = byStage[k] || []).push(d);
+    });
+    const maxStage = Math.max(1, ...Object.values(byStage).map(v => v.length));
 
     $('#dashboard').innerHTML =
       this.goalsPanel() +
+
       '<div class="panel panel-wide">' +
-        '<h3>At a glance</h3>' +
+        '<h3>At a glance <span class="hint">— click any figure to see the deals behind it</span></h3>' +
         '<div class="stat-grid">' +
-          this.stat(open.length, 'Open deals') +
-          this.stat(money(pipeValue) || '$0', 'Pipeline volume') +
-          this.stat(money(pipeComm) || '$0', 'Commission in play') +
-          this.stat(closingSoon.length, 'Closing this month') +
-          this.stat(stale.length, 'Need attention') +
-          this.stat(Store.contacts.length, 'Contacts') +
-          this.stat(wonThisYear.length, 'Closed in ' + now.getFullYear()) +
+          this.stat(open.length, 'Open deals', 'open') +
+          this.stat(money(pipeValue) || '$0', 'Pipeline volume', 'open') +
+          this.stat(money(pipeComm) || '$0', 'Commission in play', 'open') +
+          this.stat(closingSoon.length, 'Closing this month', 'closing') +
+          this.stat(stale.length, 'Need attention', 'stale') +
+          this.stat(won.length, 'Closed in ' + year, 'won') +
         '</div>' +
       '</div>' +
 
+      this.monthlyPanel(year, won) +
+      this.sourcePanel(year, won) +
+      this.topClientsPanel(year, won) +
+
       '<div class="panel">' +
-        '<h3>Deals by stage</h3>' +
-        (Object.keys(byStage).length ? Object.entries(byStage).map(([k, v]) =>
-          '<div class="bar-row">' +
+        '<h3>Open deals by stage</h3>' +
+        (Object.keys(byStage).length ? Object.entries(byStage)
+          .sort((a, b) => b[1].length - a[1].length).map(([k, v]) =>
+          '<div class="bar-row clickable" data-drill-stage="' + esc(k) + '" ' +
+            'title="' + v.length + ' deal(s) — click to open">' +
             '<span class="bar-label">' + esc(k) + '</span>' +
             '<span class="bar-track"><span class="bar-fill" style="width:' +
-              Math.round(v / maxStage * 100) + '%"></span></span>' +
-            '<span class="bar-num">' + v + '</span>' +
+              Math.round(v.length / maxStage * 100) + '%"></span></span>' +
+            '<span class="bar-num">' + v.length + '</span>' +
           '</div>').join('') : '<div class="muted">No open deals.</div>') +
       '</div>' +
 
@@ -744,6 +994,7 @@ const App = {
         (closingSoon.length ? '<div class="list-lite">' + closingSoon.map(d =>
           '<div class="list-lite-row" data-open-deal="' + esc(d.ID) + '">' +
             '<span class="grow">' + esc(d['Deal Name']) + '</span>' +
+            '<span class="card-value">' + esc(money(d.Commission) || '—') + '</span>' +
             '<span class="pill info">' + esc(niceDate(d['Expected Close'])) + '</span>' +
           '</div>').join('') + '</div>' : '<div class="muted">Nothing scheduled to close.</div>') +
       '</div>' +
@@ -768,9 +1019,179 @@ const App = {
       '</div>';
   },
 
-  stat(num, label) {
-    return '<div class="stat"><div class="stat-num">' + esc(num) +
+  /* Commission earned per month. One measure, one hue — volume rides along as
+     text rather than a second axis. */
+  monthlyPanel(year, won) {
+    const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const months = names.map(() => ({ comm: 0, vol: 0, deals: [] }));
+
+    won.forEach(d => {
+      const iso = String(d['Closed Date'] || d['Stage Updated'] || '');
+      const m = Number(iso.slice(5, 7)) - 1;
+      if (m < 0 || m > 11) return;
+      months[m].comm += numeric(d.Commission);
+      months[m].vol += numeric(d.Value);
+      months[m].deals.push(d);
+    });
+
+    const peak = Math.max(1, ...months.map(m => m.comm));
+    const best = months.reduce((a, b) => (b.comm > a.comm ? b : a), months[0]);
+
+    return '<div class="panel panel-wide">' +
+      '<h3>' + year + ' month by month <span class="hint">— commission earned</span></h3>' +
+      months.map((m, i) =>
+        '<div class="bar-row' + (m.deals.length ? ' clickable' : '') + '"' +
+          (m.deals.length ? ' data-drill-month="' + i + '"' : '') +
+          ' title="' + (m.deals.length
+            ? m.deals.length + ' deal(s) · ' + money(m.vol) + ' volume'
+            : 'nothing closed') + '">' +
+          '<span class="bar-label">' + names[i] + '</span>' +
+          '<span class="bar-track"><span class="bar-fill" style="width:' +
+            Math.round(m.comm / peak * 100) + '%"></span></span>' +
+          '<span class="bar-money">' + (m.comm ? esc(money(m.comm)) : '—') + '</span>' +
+          '<span class="bar-num">' + (m.deals.length || '') + '</span>' +
+        '</div>').join('') +
+      (best.comm ? '<div class="goal-foot">Best month so far: <b>' +
+        esc(names[months.indexOf(best)]) + '</b> at ' + esc(money(best.comm)) + '</div>' : '') +
+    '</div>';
+  },
+
+  /* Where the closed business actually came from — the question her old
+     Source Tracking tab was trying to answer. */
+  sourcePanel(year, won) {
+    const by = {};
+    won.forEach(d => {
+      const c = Store.contact(d['Contact ID']);
+      const src = (c && c.Source) || 'Not recorded';
+      (by[src] = by[src] || { comm: 0, deals: [] });
+      by[src].comm += numeric(d.Commission);
+      by[src].deals.push(d);
+    });
+    const rows = Object.entries(by).sort((a, b) => b[1].comm - a[1].comm);
+    const peak = Math.max(1, ...rows.map(r => r[1].comm));
+    const total = rows.reduce((t, r) => t + r[1].comm, 0);
+
+    return '<div class="panel">' +
+      '<h3>Where ' + year + ' business came from</h3>' +
+      (rows.length ? rows.map(([src, v]) =>
+        '<div class="bar-row clickable" data-drill-source="' + esc(src) + '" ' +
+          'title="' + v.deals.length + ' deal(s)">' +
+          '<span class="bar-label">' + esc(src) + '</span>' +
+          '<span class="bar-track"><span class="bar-fill" style="width:' +
+            Math.round(v.comm / peak * 100) + '%"></span></span>' +
+          '<span class="bar-num">' + (total ? Math.round(v.comm / total * 100) + '%' : '') +
+          '</span>' +
+        '</div>').join('') : '<div class="muted">Nothing closed yet this year.</div>') +
+    '</div>';
+  },
+
+  topClientsPanel(year, won) {
+    const by = {};
+    won.forEach(d => {
+      const id = d['Contact ID'];
+      if (!id) return;
+      (by[id] = by[id] || { comm: 0, deals: [] });
+      by[id].comm += numeric(d.Commission);
+      by[id].deals.push(d);
+    });
+    const rows = Object.entries(by)
+      .sort((a, b) => b[1].comm - a[1].comm)
+      .slice(0, 8);
+
+    return '<div class="panel">' +
+      '<h3>Best clients in ' + year + '</h3>' +
+      (rows.length ? '<div class="list-lite">' + rows.map(([id, v]) => {
+        const c = Store.contact(id);
+        return '<div class="list-lite-row" data-open-contact="' + esc(id) + '">' +
+          '<span class="grow">' + esc(c ? c.Name : 'Unknown') +
+            (v.deals.length > 1
+              ? ' <span class="pill ok">' + v.deals.length + ' deals</span>' : '') +
+          '</span>' +
+          '<span class="card-value">' + esc(money(v.comm)) + '</span>' +
+        '</div>';
+      }).join('') + '</div>' : '<div class="muted">Nothing closed yet this year.</div>') +
+    '</div>';
+  },
+
+  /* One drawer for every "show me the deals behind that number". */
+  drillDeals(title, deals, note) {
+    const vol = deals.reduce((t, d) => t + numeric(d.Value), 0);
+    const comm = deals.reduce((t, d) => t + numeric(d.Commission), 0);
+
+    openDrawer(
+      '<div class="drawer-head">' +
+        '<div><h2>' + esc(title) + '</h2>' +
+          '<div class="sub">' + deals.length + ' deal' + (deals.length === 1 ? '' : 's') +
+            (note ? ' · ' + esc(note) : '') + '</div></div>' +
+        '<button class="icon-btn close-x" data-close>✕</button>' +
+      '</div>' +
+      '<div class="drawer-body">' +
+        '<div class="sec"><div class="stat-grid">' +
+          this.stat(deals.length, 'Deals') +
+          this.stat(money(vol) || '$0', 'Volume') +
+          this.stat(money(comm) || '$0', 'Commission') +
+        '</div></div>' +
+        '<div class="sec">' +
+          (deals.length ? '<div class="list-lite">' + deals
+            .sort((a, b) => String(b['Closed Date'] || b.Created || '')
+              .localeCompare(String(a['Closed Date'] || a.Created || '')))
+            .map(d => {
+              const c = Store.contact(d['Contact ID']);
+              return '<div class="list-lite-row" data-open-deal="' + esc(d.ID) + '">' +
+                '<span class="pill' + (d.Pipeline === 'Buyer' ? ' info' : '') + '">' +
+                  esc(d.Pipeline) + '</span>' +
+                '<span class="grow">' + esc(d['Deal Name']) +
+                  (c ? ' <span class="muted">· ' + esc(c.Name) + '</span>' : '') + '</span>' +
+                '<span class="card-price">' + esc(money(d.Value) || '—') + '</span>' +
+                '<span class="card-value">' + esc(money(d.Commission) || '—') + '</span>' +
+              '</div>';
+            }).join('') + '</div>'
+            : '<div class="muted">No deals in here.</div>') +
+        '</div>' +
+      '</div>'
+    );
+  },
+
+  stat(num, label, drill) {
+    return '<div class="stat' + (drill ? ' clickable" data-stat-drill="' + esc(drill) : '') +
+      '"><div class="stat-num">' + esc(num) +
       '</div><div class="stat-label">' + esc(label) + '</div></div>';
+  },
+
+  /* Every dashboard number is a door into the deals behind it. */
+  openDrill(kind, value) {
+    const open = Store.deals.filter(d => !CLOSED_STAGES.includes(d.Stage));
+    const year = (Store.settings.goals && Store.settings.goals.year) ||
+      new Date().getFullYear();
+    const won = this.closedInYear(year);
+    const names = ['January','February','March','April','May','June','July',
+      'August','September','October','November','December'];
+
+    if (kind === 'open') return this.drillDeals('Open deals', open, 'everything still in play');
+    if (kind === 'won') return this.drillDeals('Closed in ' + year, won);
+    if (kind === 'stale') return this.drillDeals('Need attention',
+      open.filter(d => Store.isStale(d)), 'no movement in ' + CONFIG.STALE_DAYS + '+ days');
+    if (kind === 'closing') {
+      const now = new Date();
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+        .toISOString().slice(0, 10);
+      return this.drillDeals('Closing this month',
+        open.filter(d => d['Expected Close'] && d['Expected Close'] <= monthEnd));
+    }
+    if (kind === 'stage') return this.drillDeals(value,
+      open.filter(d => (d.Pipeline + ' \u00b7 ' + d.Stage) === value));
+    if (kind === 'month') {
+      const i = Number(value);
+      return this.drillDeals(names[i] + ' ' + year, won.filter(d => {
+        const iso = String(d['Closed Date'] || d['Stage Updated'] || '');
+        return Number(iso.slice(5, 7)) - 1 === i;
+      }), 'closed');
+    }
+    if (kind === 'source') return this.drillDeals(value + ' \u2014 ' + year,
+      won.filter(d => {
+        const c = Store.contact(d['Contact ID']);
+        return ((c && c.Source) || 'Not recorded') === value;
+      }), 'closed business from this source');
   },
 
   /* --------------------------------------------------------------------
@@ -884,10 +1305,46 @@ const App = {
 
   /* ------------------------------- forms ------------------------------- */
 
+  /* Everyone you could attach a deal to: the CRM first, then the rest of your
+     Google address book. Picking a Google-only person links them in on save. */
   contactOptions() {
-    return Store.contacts
-      .slice().sort((a, b) => String(a.Name).localeCompare(String(b.Name)))
-      .map(c => ({ value: c.ID, label: c.Name }));
+    const crm = Store.contacts
+      .slice().sort((a, b) => String(a.Name || '').localeCompare(String(b.Name || '')))
+      .map(c => ({
+        value: c.ID,
+        label: c.Name,
+        sub: [c.Phone, c.Email].filter(Boolean).join(' · '),
+        kind: 'crm',
+      }));
+
+    const linked = new Set(Store.contacts.map(c => c['Google ID']).filter(Boolean));
+    const google = (People._cache || [])
+      .filter(p => !linked.has(p.id))
+      .map(p => ({
+        value: 'google:' + p.id,
+        label: p.name,
+        sub: [p.phone, p.email, p.org].filter(Boolean).join(' · '),
+        kind: 'google',
+      }));
+
+    return crm.concat(google);
+  },
+
+  /* A picked value may be an existing CRM id, a Google person we still need to
+     pull in, or a brand new name typed straight into the box. */
+  async resolveContactId(v) {
+    if (!v) return '';
+    if (v.indexOf('google:') === 0) {
+      const p = People.byId(v.slice(7));
+      if (!p) return '';
+      const saved = await Store.linkGoogleContact(p);
+      return saved.ID;
+    }
+    if (v.indexOf('new:') === 0) {
+      const saved = await Store.saveContact({ Name: v.slice(4), Type: '' });
+      return saved.ID;
+    }
+    return v;
   },
 
   async contactForm(id) {
@@ -899,14 +1356,18 @@ const App = {
       title: id ? 'Edit contact' : 'New contact',
       submitLabel: id ? 'Save changes' : 'Add contact',
       fields: [
-        { name: 'Name', label: 'Name', value: c.Name, required: true },
-        { name: 'Type', label: 'Type', type: 'select', options: s.contactTypes, value: c.Type },
-        { name: 'Phone', label: 'Phone', type: 'tel', value: c.Phone },
-        { name: 'Email', label: 'Email', type: 'email', value: c.Email },
+        { name: 'Name', label: 'Name', value: c.Name, required: true, half: true },
+        { name: 'Type', label: 'Type', type: 'select', options: s.contactTypes,
+          value: c.Type, half: true },
+        { name: 'Phone', label: 'Phone', type: 'tel', value: c.Phone, half: true },
+        { name: 'Email', label: 'Email', type: 'email', value: c.Email, half: true },
         { name: 'Address', label: 'Address', value: c.Address,
           placeholder: 'e.g. 123 Maple St NW, Edmonton' },
         { name: 'Source', label: 'Where did they come from?', type: 'select',
           options: s.sources, value: c.Source, allowBlank: true },
+        { name: 'Birthday', label: 'Birthday', type: 'date', value: c.Birthday, half: true },
+        { name: 'Touch Cadence', label: 'Keep in touch', type: 'select', half: true,
+          options: Reminders.CADENCES, value: c['Touch Cadence'], allowBlank: true },
         { name: 'Tags', label: 'Tags', value: c.Tags, placeholder: 'first-time buyer, west end' },
         { name: 'Notes', label: 'Notes', type: 'textarea', value: c.Notes },
       ],
@@ -936,26 +1397,37 @@ const App = {
     const pipeline = d.Pipeline || presets.Pipeline || this.pipeline;
     const stages = Store.stagesFor(pipeline);
 
+    const startId = d['Contact ID'] || presets['Contact ID'] || '';
+    const startContact = Store.contact(startId);
+
     const data = await Modal.open({
       title: id ? 'Edit deal' : 'New deal',
       submitLabel: id ? 'Save changes' : 'Create deal',
       fields: [
         { name: 'Deal Name', label: 'Deal name', value: d['Deal Name'],
           required: true, placeholder: 'e.g. 123 Maple St — Purchase' },
-        { name: 'Contact ID', label: 'Contact', type: 'select', allowBlank: true,
-          options: this.contactOptions(), value: d['Contact ID'] || presets['Contact ID'] },
-        { name: 'Pipeline', label: 'Pipeline', type: 'select',
+        { name: 'Contact ID', label: 'Contact', type: 'combo', allowNew: true,
+          value: startId, text: startContact ? startContact.Name : '',
+          placeholder: 'Type a name — searches all your Google contacts',
+          options: () => this.contactOptions() },
+        { name: 'Pipeline', label: 'Pipeline', type: 'select', half: true,
           options: Store.pipelineNames(), value: pipeline },
-        { name: 'Stage', label: 'Stage', type: 'select', options: stages,
+        { name: 'Stage', label: 'Stage', type: 'select', options: stages, half: true,
           value: d.Stage || presets.Stage || stages[0] },
-        { name: 'Value', label: 'Sale price', value: d.Value, placeholder: '450000' },
-        { name: 'Commission', label: 'Your commission', value: d.Commission, placeholder: '9400' },
-        { name: 'GST', label: 'GST', value: d.GST },
-        { name: 'Property Address', label: 'Property address', value: d['Property Address'] },
-        { name: 'Expected Close', label: 'Expected close date', type: 'date',
-          value: d['Expected Close'] },
+        { name: 'Value', label: 'Sale price', value: d.Value, placeholder: '450000', half: true },
+        { name: 'Commission', label: 'Your commission', value: d.Commission,
+          placeholder: '9400', half: true },
+        { name: 'GST', label: 'GST', value: d.GST, half: true },
+        { name: 'Property Address', label: 'Property address', value: d['Property Address'],
+          half: true },
+        { name: 'Expected Close', label: 'Expected close', type: 'date',
+          value: d['Expected Close'], half: true },
         { name: 'Closed Date', label: 'Actual closing date', type: 'date',
-          value: d['Closed Date'] },
+          value: d['Closed Date'], half: true },
+        { name: 'Conditions Due', label: 'Conditions due', type: 'date',
+          value: d['Conditions Due'], half: true },
+        { name: 'Possession Date', label: 'Possession', type: 'date',
+          value: d['Possession Date'], half: true },
         { name: 'Notes', label: 'Notes', type: 'textarea', value: d.Notes },
       ],
       onRender: (form) => {
@@ -971,6 +1443,7 @@ const App = {
 
     try {
       showLoader('Saving…');
+      data['Contact ID'] = await this.resolveContactId(data['Contact ID']);
       const saved = await Store.saveDeal(Object.assign({ ID: id || '' }, data));
       hideLoader();
       if (saved.Pipeline) this.pipeline = saved.Pipeline;
@@ -1012,28 +1485,36 @@ const App = {
     } catch (e) { hideLoader(); toast(e.message, true); }
   },
 
-  async scheduleForm(dealId) {
-    const d = Store.deal(dealId);
-    if (!d) return;
-    const c = Store.contact(d['Contact ID']);
+  async scheduleForm(dealId, presets = {}) {
+    const d = dealId ? Store.deal(dealId) : null;
+    if (dealId && !d) return;
+    const c = presets.contactId ? Store.contact(presets.contactId)
+            : (d ? Store.contact(d['Contact ID']) : null);
+    if (!d && !c) return;
 
     const now = new Date(Date.now() + 3600000);
-    const defaultLocal = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
-      .toISOString().slice(0, 16);
+    const defaultLocal = presets.dateISO
+      ? presets.dateISO + 'T09:00'
+      : new Date(now.getTime() - now.getTimezoneOffset() * 60000)
+          .toISOString().slice(0, 16);
 
     const data = await Modal.open({
       title: 'Add to your Google Calendar',
       submitLabel: 'Create event',
       fields: [
         { name: 'Type', label: 'Type', type: 'select',
-          options: ['Showing', 'Call', 'Meeting', 'Listing Appointment', 'Closing'],
-          value: 'Showing' },
+          options: Store.settings.activityTypes ||
+            ['Showing', 'Call', 'Meeting', 'Listing Appointment', 'Closing'],
+          value: presets.type || 'Showing' },
         { name: 'title', label: 'Title', required: true,
-          value: (d['Deal Name'] || '') + (c ? ' — ' + c.Name : '') },
+          value: presets.title ||
+            ((d && d['Deal Name']) || '') + (c ? ' — ' + c.Name : '') },
         { name: 'start', label: 'Starts', type: 'datetime-local',
-          value: defaultLocal, required: true },
-        { name: 'minutes', label: 'Length (minutes)', type: 'number', value: '60' },
-        { name: 'location', label: 'Location', value: d['Property Address'] || '' },
+          value: defaultLocal, required: true, half: true },
+        { name: 'minutes', label: 'Length (minutes)', type: 'number', value: '60',
+          half: true },
+        { name: 'location', label: 'Location',
+          value: (d && d['Property Address']) || (c && c.Address) || '' },
         { name: 'invite', label: 'Invite the contact by email?', type: 'select',
           options: ['No', 'Yes'], value: 'No' },
       ],
@@ -1051,14 +1532,19 @@ const App = {
         attendeeEmail: (data.invite === 'Yes' && c && c.Email) ? c.Email : null,
       });
       await Store.addActivity({
-        'Contact ID': d['Contact ID'] || '', 'Deal ID': d.ID,
+        'Contact ID': (d && d['Contact ID']) || (c && c.ID) || '',
+        'Deal ID': d ? d.ID : '',
         Type: data.Type, Date: String(data.start).slice(0, 10),
         Summary: data.title, 'Gmail Thread ID': '',
         'Calendar Event ID': ev.id || '', Done: '',
       });
       hideLoader();
+      if (this.view === 'calendar') await this.loadWeek();
       this.render();
-      this.openDeal(d.ID);
+      if (presets.openAfter !== false) {
+        if (d) this.openDeal(d.ID);
+        else if (c) this.openContact(c.ID);
+      }
       toast('Added to your calendar');
     } catch (e) { hideLoader(); toast(e.message, true); }
   },
@@ -1334,6 +1820,30 @@ const App = {
     const hit = (attr) => { const n = t.closest('[' + attr + ']'); return n && n.getAttribute(attr); };
 
     if (t.closest('[data-close]')) return closeDrawer();
+
+    const calNav = hit('data-cal-nav');
+    if (calNav) return this.moveWeek(calNav);
+
+    const calFilter = hit('data-cal-filter');
+    if (calFilter) return this.toggleCalFilter(calFilter);
+
+    const remDone = hit('data-rem-done');
+    if (remDone) { e.stopPropagation(); return this.markReminderDone(remDone); }
+
+    const remSched = hit('data-rem-schedule');
+    if (remSched) { e.stopPropagation(); return this.scheduleReminder(remSched); }
+
+    const statDrill = hit('data-stat-drill');
+    if (statDrill) return this.openDrill(statDrill);
+
+    const drillStage = hit('data-drill-stage');
+    if (drillStage) return this.openDrill('stage', drillStage);
+
+    const drillMonth = hit('data-drill-month');
+    if (drillMonth != null) return this.openDrill('month', drillMonth);
+
+    const drillSource = hit('data-drill-source');
+    if (drillSource) return this.openDrill('source', drillSource);
 
     const openDealId = hit('data-open-deal');
     if (openDealId) return this.openDeal(openDealId);
